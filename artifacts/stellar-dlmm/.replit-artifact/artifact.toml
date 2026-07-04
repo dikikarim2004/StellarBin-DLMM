@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "StellarBin — Liquidity Protocol"
+version = "1.0.0"
+id = "artifacts/stellar-dlmm"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 20441
+
+[services.development]
+run = "pnpm --filter @workspace/stellar-dlmm run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/stellar-dlmm", "run", "build" ]
+publicDir = "artifacts/stellar-dlmm/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "20441"
+BASE_PATH = "/"

@@ -1,0 +1,539 @@
+openapi: 3.1.0
+info:
+  title: Api
+  version: 0.1.0
+  description: Stellar DLMM Liquidity Protocol API
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: pools
+    description: Liquidity pool operations
+  - name: tokens
+    description: Token information
+  - name: swap
+    description: Swap operations
+  - name: transactions
+    description: Transaction history
+
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+
+  /pools:
+    get:
+      operationId: listPools
+      tags: [pools]
+      summary: List all liquidity pools
+      parameters:
+        - name: sortBy
+          in: query
+          schema:
+            type: string
+            enum: [tvl, volume24h, apr, fees24h]
+        - name: search
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of pools
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Pool"
+
+  /pools/{poolId}:
+    get:
+      operationId: getPool
+      tags: [pools]
+      summary: Get pool details
+      parameters:
+        - name: poolId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Pool details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PoolDetail"
+        "404":
+          description: Pool not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /pools/{poolId}/bins:
+    get:
+      operationId: getPoolBins
+      tags: [pools]
+      summary: Get bin distribution for a DLMM pool
+      parameters:
+        - name: poolId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Bin data
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Bin"
+
+  /pools/{poolId}/stats:
+    get:
+      operationId: getPoolStats
+      tags: [pools]
+      summary: Get pool historical stats (volume, fees, TVL over time)
+      parameters:
+        - name: poolId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Pool stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PoolStats"
+
+  /pools/summary:
+    get:
+      operationId: getProtocolSummary
+      tags: [pools]
+      summary: Get protocol-wide summary (TVL, volume, fees)
+      responses:
+        "200":
+          description: Protocol summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProtocolSummary"
+
+  /tokens:
+    get:
+      operationId: listTokens
+      tags: [tokens]
+      summary: List all supported tokens
+      responses:
+        "200":
+          description: Token list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Token"
+
+  /swap/quote:
+    post:
+      operationId: getSwapQuote
+      tags: [swap]
+      summary: Get a swap quote
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SwapQuoteInput"
+      responses:
+        "200":
+          description: Swap quote
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SwapQuote"
+
+  /swap/route:
+    post:
+      operationId: getSwapRoute
+      tags: [swap]
+      summary: Get optimal swap routing through pools
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SwapRouteInput"
+      responses:
+        "200":
+          description: Optimal swap route
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SwapRoute"
+
+  /transactions:
+    get:
+      operationId: listTransactions
+      tags: [transactions]
+      summary: List indexed transactions (swaps, adds, removes)
+      parameters:
+        - name: poolId
+          in: query
+          schema:
+            type: string
+        - name: address
+          in: query
+          schema:
+            type: string
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [swap, add_liquidity, remove_liquidity]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Transaction list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Transaction"
+
+  /positions/{address}:
+    get:
+      operationId: getUserPositions
+      tags: [pools]
+      summary: Get all LP positions for a wallet address
+      parameters:
+        - name: address
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: User positions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Position"
+
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+
+    Token:
+      type: object
+      required: [symbol, name, address, decimals, price, logoUrl]
+      properties:
+        symbol:
+          type: string
+        name:
+          type: string
+        address:
+          type: string
+        decimals:
+          type: integer
+        price:
+          type: number
+        priceChange24h:
+          type: number
+        logoUrl:
+          type: string
+
+    Pool:
+      type: object
+      required: [id, tokenX, tokenY, tvl, volume24h, fees24h, apr, binStep, activeBinId]
+      properties:
+        id:
+          type: string
+        tokenX:
+          $ref: "#/components/schemas/Token"
+        tokenY:
+          $ref: "#/components/schemas/Token"
+        tvl:
+          type: number
+        volume24h:
+          type: number
+        fees24h:
+          type: number
+        apr:
+          type: number
+        binStep:
+          type: integer
+        activeBinId:
+          type: integer
+        currentPrice:
+          type: number
+        fee:
+          type: number
+
+    PoolDetail:
+      type: object
+      required: [id, tokenX, tokenY, tvl, volume24h, fees24h, apr, binStep, activeBinId, currentPrice, fee, reserveX, reserveY, totalBins]
+      properties:
+        id:
+          type: string
+        tokenX:
+          $ref: "#/components/schemas/Token"
+        tokenY:
+          $ref: "#/components/schemas/Token"
+        tvl:
+          type: number
+        volume24h:
+          type: number
+        fees24h:
+          type: number
+        apr:
+          type: number
+        binStep:
+          type: integer
+        activeBinId:
+          type: integer
+        currentPrice:
+          type: number
+        fee:
+          type: number
+        reserveX:
+          type: number
+        reserveY:
+          type: number
+        totalBins:
+          type: integer
+        contractAddress:
+          type: string
+
+    Bin:
+      type: object
+      required: [binId, price, liquidityX, liquidityY, isActive]
+      properties:
+        binId:
+          type: integer
+        price:
+          type: number
+        liquidityX:
+          type: number
+        liquidityY:
+          type: number
+        isActive:
+          type: boolean
+        totalLiquidity:
+          type: number
+
+    PoolStatsPoint:
+      type: object
+      required: [timestamp, tvl, volume, fees]
+      properties:
+        timestamp:
+          type: string
+        tvl:
+          type: number
+        volume:
+          type: number
+        fees:
+          type: number
+
+    PoolStats:
+      type: object
+      required: [poolId, period, data]
+      properties:
+        poolId:
+          type: string
+        period:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/PoolStatsPoint"
+
+    ProtocolSummary:
+      type: object
+      required: [totalTvl, totalVolume24h, totalFees24h, totalPools, totalTransactions24h]
+      properties:
+        totalTvl:
+          type: number
+        totalVolume24h:
+          type: number
+        totalFees24h:
+          type: number
+        totalPools:
+          type: integer
+        totalTransactions24h:
+          type: integer
+        tvlChange24h:
+          type: number
+        volumeChange24h:
+          type: number
+
+    SwapQuoteInput:
+      type: object
+      required: [tokenInAddress, tokenOutAddress, amountIn]
+      properties:
+        tokenInAddress:
+          type: string
+        tokenOutAddress:
+          type: string
+        amountIn:
+          type: number
+        slippageTolerance:
+          type: number
+
+    SwapQuote:
+      type: object
+      required: [tokenIn, tokenOut, amountIn, amountOut, priceImpact, minimumReceived, fee, route]
+      properties:
+        tokenIn:
+          $ref: "#/components/schemas/Token"
+        tokenOut:
+          $ref: "#/components/schemas/Token"
+        amountIn:
+          type: number
+        amountOut:
+          type: number
+        priceImpact:
+          type: number
+        minimumReceived:
+          type: number
+        fee:
+          type: number
+        route:
+          type: array
+          items:
+            type: string
+        executionPrice:
+          type: number
+        binsTraversed:
+          type: integer
+
+    SwapRouteInput:
+      type: object
+      required: [tokenInAddress, tokenOutAddress, amountIn]
+      properties:
+        tokenInAddress:
+          type: string
+        tokenOutAddress:
+          type: string
+        amountIn:
+          type: number
+
+    SwapRoute:
+      type: object
+      required: [hops, totalAmountOut, totalPriceImpact, totalFee]
+      properties:
+        hops:
+          type: array
+          items:
+            $ref: "#/components/schemas/RouteHop"
+        totalAmountOut:
+          type: number
+        totalPriceImpact:
+          type: number
+        totalFee:
+          type: number
+
+    RouteHop:
+      type: object
+      required: [poolId, tokenIn, tokenOut, amountIn, amountOut]
+      properties:
+        poolId:
+          type: string
+        tokenIn:
+          $ref: "#/components/schemas/Token"
+        tokenOut:
+          $ref: "#/components/schemas/Token"
+        amountIn:
+          type: number
+        amountOut:
+          type: number
+
+    Transaction:
+      type: object
+      required: [id, type, poolId, address, timestamp, txHash]
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          enum: [swap, add_liquidity, remove_liquidity]
+        poolId:
+          type: string
+        address:
+          type: string
+        timestamp:
+          type: string
+        txHash:
+          type: string
+        tokenXAmount:
+          type: number
+        tokenYAmount:
+          type: number
+        valueUsd:
+          type: number
+        binsAffected:
+          type: array
+          items:
+            type: integer
+
+    Position:
+      type: object
+      required: [id, poolId, address, binRangeLow, binRangeHigh, liquidityX, liquidityY, valueUsd, unrealizedFees]
+      properties:
+        id:
+          type: string
+        poolId:
+          type: string
+        pool:
+          $ref: "#/components/schemas/Pool"
+        address:
+          type: string
+        binRangeLow:
+          type: integer
+        binRangeHigh:
+          type: integer
+        liquidityX:
+          type: number
+        liquidityY:
+          type: number
+        valueUsd:
+          type: number
+        unrealizedFees:
+          type: number
+        strategy:
+          type: string
+          enum: [spot, curve, bid_ask]

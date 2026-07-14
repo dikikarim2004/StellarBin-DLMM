@@ -13,6 +13,16 @@ export interface ErrorResponse {
   error: string;
 }
 
+export interface FaucetRequest {
+  /** Destination Stellar account (G...) that already has a TESTUSD trustline */
+  address: string;
+}
+
+export interface FaucetResponse {
+  txHash: string;
+  amount: string;
+}
+
 export interface Token {
   symbol: string;
   name: string;
@@ -23,8 +33,21 @@ export interface Token {
   logoUrl: string;
 }
 
+/**
+ * dlmm = our on-chain DLMM contract; amm = native Stellar DEX liquidity pool (aggregated from Horizon)
+ */
+export type PoolCategory = typeof PoolCategory[keyof typeof PoolCategory];
+
+
+export const PoolCategory = {
+  dlmm: 'dlmm',
+  amm: 'amm',
+} as const;
+
 export interface Pool {
   id: string;
+  /** dlmm = our on-chain DLMM contract; amm = native Stellar DEX liquidity pool (aggregated from Horizon) */
+  category: PoolCategory;
   tokenX: Token;
   tokenY: Token;
   tvl: number;
@@ -35,10 +58,37 @@ export interface Pool {
   activeBinId: number;
   currentPrice?: number;
   fee?: number;
+  reserveX?: number;
+  reserveY?: number;
+  /** Total LP shares/pool shares outstanding (AMM pools from Horizon) */
+  totalShares?: number;
+  /** Link to view an AMM pool on stellar.expert */
+  externalUrl?: string;
+  /** False when 24h volume/APR is not indexed for this pool (shown as — in UI) */
+  volumeAvailable?: boolean;
+  /** Numeric pool_id inside the DLMM registry contract (dlmm pools only) */
+  dlmmPoolId?: number;
+  /** True when activationTs is in the future — pool accepts liquidity but swaps are gated (anti-snipe) */
+  isLaunchPool?: boolean;
+  /** Unix timestamp after which swaps are allowed. 0 = Standard Pool (active immediately) */
+  activationTs?: number;
+  /** Platform's share of every swap fee, in bps of the fee (contract-wide, admin-adjustable) */
+  protocolFeeBps?: number;
+  /** LP's share of every swap fee, in bps of the fee (10000 - protocolFeeBps) */
+  lpFeeBps?: number;
 }
+
+export type PoolDetailCategory = typeof PoolDetailCategory[keyof typeof PoolDetailCategory];
+
+
+export const PoolDetailCategory = {
+  dlmm: 'dlmm',
+  amm: 'amm',
+} as const;
 
 export interface PoolDetail {
   id: string;
+  category: PoolDetailCategory;
   tokenX: Token;
   tokenY: Token;
   tvl: number;
@@ -53,6 +103,14 @@ export interface PoolDetail {
   reserveY: number;
   totalBins: number;
   contractAddress?: string;
+  totalShares?: number;
+  externalUrl?: string;
+  volumeAvailable?: boolean;
+  dlmmPoolId?: number;
+  isLaunchPool?: boolean;
+  activationTs?: number;
+  protocolFeeBps?: number;
+  lpFeeBps?: number;
 }
 
 export interface Bin {
@@ -128,6 +186,20 @@ export interface SwapRoute {
   totalFee: number;
 }
 
+export interface RecentSwap {
+  txHash: string;
+  timestamp: string;
+  address: string;
+  /** true = tokenX sold for tokenY, false = tokenY sold for tokenX */
+  xToY: boolean;
+  /** Raw stroops (i128), as a string to avoid precision loss */
+  amountIn: string;
+  /** Raw stroops (i128), as a string to avoid precision loss */
+  amountOut: string;
+  /** Raw stroops (i128), as a string to avoid precision loss */
+  feePaid: string;
+}
+
 export type TransactionType = typeof TransactionType[keyof typeof TransactionType];
 
 
@@ -166,6 +238,10 @@ export interface Position {
   address: string;
   binRangeLow: number;
   binRangeHigh: number;
+  /** The single bin this position occupies (DLMM positions are per-bin) */
+  binId?: number;
+  /** LP shares held in the bin */
+  shares?: number;
   liquidityX: number;
   liquidityY: number;
   valueUsd: number;

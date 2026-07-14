@@ -47,6 +47,14 @@ const WALLETS: {
   },
 ];
 
+function isInsideIframe(): boolean {
+  try {
+    return window.self !== window.top;
+  } catch {
+    return true;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // WalletModal
 // ---------------------------------------------------------------------------
@@ -214,6 +222,16 @@ function SelectWalletView({
         <div className="flex items-start gap-2 bg-destructive/10 border border-destructive/30 text-destructive rounded-md p-3 text-sm mt-2">
           <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
           <span>{wallet.error}</span>
+        </div>
+      )}
+
+      {!freighterInstalled && isInsideIframe() && (
+        <div className="flex items-start gap-2 bg-yellow-500/10 border border-yellow-500/30 text-yellow-500 rounded-md p-3 text-sm mt-2">
+          <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+          <span>
+            Freighter isn't detected because this preview runs inside an embedded frame — browser
+            extensions can't inject into it. Open this app in its own browser tab to connect Freighter.
+          </span>
         </div>
       )}
 

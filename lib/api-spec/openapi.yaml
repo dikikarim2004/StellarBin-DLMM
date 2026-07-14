@@ -188,6 +188,37 @@ paths:
               schema:
                 $ref: "#/components/schemas/SwapRoute"
 
+  /faucet/testusd:
+    post:
+      operationId: requestTestusdFaucet
+      tags: [tokens]
+      summary: Send testnet TESTUSD to a wallet (requires an existing trustline)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FaucetRequest"
+      responses:
+        "200":
+          description: Faucet payment sent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FaucetResponse"
+        "400":
+          description: Invalid request or missing trustline
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: Faucet payment failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /transactions:
     get:
       operationId: listTransactions
@@ -220,6 +251,33 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Transaction"
+
+  /pools/{poolId}/swaps:
+    get:
+      operationId: getPoolRecentSwaps
+      tags: [pools]
+      summary: Recent swap events read directly from the DLMM contract (on-chain, cached briefly)
+      parameters:
+        - name: poolId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Recent on-chain swaps for this pool
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/RecentSwap"
+        "404":
+          description: Pool not found or not a DLMM registry pool
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /positions/{address}:
     get:
@@ -258,6 +316,23 @@ components:
         error:
           type: string
 
+    FaucetRequest:
+      type: object
+      required: [address]
+      properties:
+        address:
+          type: string
+          description: Destination Stellar account (G...) that already has a TESTUSD trustline
+
+    FaucetResponse:
+      type: object
+      required: [txHash, amount]
+      properties:
+        txHash:
+          type: string
+        amount:
+          type: string
+
     Token:
       type: object
       required: [symbol, name, address, decimals, price, logoUrl]
@@ -279,10 +354,14 @@ components:
 
     Pool:
       type: object
-      required: [id, tokenX, tokenY, tvl, volume24h, fees24h, apr, binStep, activeBinId]
+      required: [id, tokenX, tokenY, tvl, volume24h, fees24h, apr, binStep, activeBinId, category]
       properties:
         id:
           type: string
+        category:
+          type: string
+          enum: [dlmm, amm]
+          description: "dlmm = our on-chain DLMM contract; amm = native Stellar DEX liquidity pool (aggregated from Horizon)"
         tokenX:
           $ref: "#/components/schemas/Token"
         tokenY:
@@ -303,13 +382,44 @@ components:
           type: number
         fee:
           type: number
+        reserveX:
+          type: number
+        reserveY:
+          type: number
+        totalShares:
+          type: number
+          description: "Total LP shares/pool shares outstanding (AMM pools from Horizon)"
+        externalUrl:
+          type: string
+          description: "Link to view an AMM pool on stellar.expert"
+        volumeAvailable:
+          type: boolean
+          description: "False when 24h volume/APR is not indexed for this pool (shown as — in UI)"
+        dlmmPoolId:
+          type: integer
+          description: "Numeric pool_id inside the DLMM registry contract (dlmm pools only)"
+        isLaunchPool:
+          type: boolean
+          description: "True when activationTs is in the future — pool accepts liquidity but swaps are gated (anti-snipe)"
+        activationTs:
+          type: integer
+          description: "Unix timestamp after which swaps are allowed. 0 = Standard Pool (active immediately)"
+        protocolFeeBps:
+          type: integer
+          description: "Platform's share of every swap fee, in bps of the fee (contract-wide, admin-adjustable)"
+        lpFeeBps:
+          type: integer
+          description: "LP's share of every swap fee, in bps of the fee (10000 - protocolFeeBps)"
 
     PoolDetail:
       type: object
-      required: [id, tokenX, tokenY, tvl, volume24h, fees24h, apr, binStep, activeBinId, currentPrice, fee, reserveX, reserveY, totalBins]
+      required: [id, tokenX, tokenY, tvl, volume24h, fees24h, apr, binStep, activeBinId, currentPrice, fee, reserveX, reserveY, totalBins, category]
       properties:
         id:
           type: string
+        category:
+          type: string
+          enum: [dlmm, amm]
         tokenX:
           $ref: "#/components/schemas/Token"
         tokenY:
@@ -338,6 +448,22 @@ components:
           type: integer
         contractAddress:
           type: string
+        totalShares:
+          type: number
+        externalUrl:
+          type: string
+        volumeAvailable:
+          type: boolean
+        dlmmPoolId:
+          type: integer
+        isLaunchPool:
+          type: boolean
+        activationTs:
+          type: integer
+        protocolFeeBps:
+          type: integer
+        lpFeeBps:
+          type: integer
 
     Bin:
       type: object
@@ -482,6 +608,29 @@ components:
         amountOut:
           type: number
 
+    RecentSwap:
+      type: object
+      required: [txHash, timestamp, address, xToY, amountIn, amountOut, feePaid]
+      properties:
+        txHash:
+          type: string
+        timestamp:
+          type: string
+        address:
+          type: string
+        xToY:
+          type: boolean
+          description: "true = tokenX sold for tokenY, false = tokenY sold for tokenX"
+        amountIn:
+          type: string
+          description: "Raw stroops (i128), as a string to avoid precision loss"
+        amountOut:
+          type: string
+          description: "Raw stroops (i128), as a string to avoid precision loss"
+        feePaid:
+          type: string
+          description: "Raw stroops (i128), as a string to avoid precision loss"
+
     Transaction:
       type: object
       required: [id, type, poolId, address, timestamp, txHash]
@@ -526,6 +675,12 @@ components:
           type: integer
         binRangeHigh:
           type: integer
+        binId:
+          type: integer
+          description: "The single bin this position occupies (DLMM positions are per-bin)"
+        shares:
+          type: number
+          description: "LP shares held in the bin"
         liquidityX:
           type: number
         liquidityY:

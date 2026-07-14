@@ -1,103 +1,209 @@
-# StellarBin — Decentralized Liquidity Protocol
+# StellarBin — Dynamic Liquidity Market Maker on Stellar
 
-StellarBin is a full-stack DeFi boilerplate for a Dynamic Liquidity Market Maker (DLMM) on the Stellar network. This project combines a React frontend, an Express backend, and Soroban/Rust smart contracts to deliver swap, liquidity pool, LP position, and analytics experiences.
+StellarBin is a full-stack **DLMM (Dynamic Liquidity Market Maker)** protocol built on the [Stellar](https://stellar.org) network using **Soroban** smart contracts. Inspired by Meteora on Solana, it enables concentrated liquidity across discrete price bins, dynamic fees that respond to market volatility, and permissionless pool creation — all on-chain.
 
-## What is included in this project
+> **⚠️ Testnet Notice:** StellarBin is currently deployed on **Stellar Testnet**. All tokens, transactions, and balances are test assets with no real value. Do not use mainnet wallets or real funds.
 
-- `artifacts/stellar-dlmm/` — DeFi frontend application built with React + Vite.
-- `artifacts/api-server/` — Express API server providing pool data, swap quotes, and transactions.
-- `contracts/` — Soroban/Rust smart contracts:
-  - `contracts/math/` — fixed-point math library for bin pricing and dynamic fees.
-  - `contracts/dlmm/` — main DLMM contract with a bin-based AMM.
-  - `contracts/vault/` — vault contract supporting deposit/withdraw behavior.
-- `lib/api-spec/` — OpenAPI specification and Orval configuration.
-- `lib/api-client-react/` — generated React Query API client.
-- `lib/api-zod/` — generated Zod validators.
-- `lib/db/` — Drizzle/Postgres configuration and schema.
+---
 
-## Key features
+## Features
 
-- Token swap with live quotes, price impact, and slippage controls.
-- Liquidity pool listing with statistics and filtering.
-- Pool detail pages with bin distribution, TVL, volume, and fee history.
-- Add/remove liquidity flows with preset strategies.
-- LP position page displaying bin range and unrealized fees.
-- Protocol analytics pages with TVL, volume, top pools, and transaction feed.
-- Soroban smart contracts for DLMM, vault, and on-chain math.
-- Computed pool data model so the UI can work without on-chain deployment.
+- **Discrete-bin AMM** — Liquidity is concentrated in specific price bins instead of spread across an infinite curve, enabling higher capital efficiency.
+- **Dynamic fees** — Fee rates automatically increase during high-volatility periods and decay back to the base rate as trading activity normalizes, protecting LPs from toxic flow.
+- **Permissionless pool creation** — Anyone can create a Standard Pool (active immediately) or a Launch Pool (swaps gated until a specified activation time, anti-snipe protection).
+- **Real on-chain execution** — Swap quotes, liquidity operations, and pool creation all submit real signed transactions to the Stellar testnet via Soroban RPC.
+- **Wallet support** — Connect via Freighter or Albedo browser extensions to sign and submit transactions.
 
-## Architecture overview
+---
 
-- Discrete bin-based AMM model: each bin maintains a constant price, and swaps move through multiple bins sequentially.
-- Prices and fees are computed using fixed-point `i128` scaled by `10^18` to avoid floating-point operations in Soroban.
-- Backend API generates pool/bin statistics while the frontend constructs unsigned Soroban transactions.
-- Wallet signing is handled in the UI layer with Freighter/Albedo.
+## Smart Contract Addresses (Stellar Testnet)
 
-## Stack
+| Contract | Address |
+|---|---|
+| **DLMM** (main protocol) | `CCW5MVYJFJPBJNJY7GN6BHC5BQR47RXVIM2T2X4F3YSQC7MQ7J4GNESH` |
+| **Vault** | `CCDVBRMT3BI65JV2C7AQJOSIGT76MNNTXSVYDKGXKPBSOKVWQRGKU7VI` |
+| **Math library** | `CB7U2EL6L4AR2IWANOSXDYVHWL3D3PD3XOZU6PUA4MDAVWCOT3AAVX4Z` |
+| **Native XLM (SAC)** | `CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC` |
+| **TESTUSD (SAC)** | `CCA733ILFGI7SESYWNBYTKHUJTJTSU2ORRT6SFNSDZWHYSE4WDLLDUND` |
 
-- Package manager: pnpm workspaces
-- Languages: TypeScript, Rust
-- Frontend: React + Vite + TailwindCSS + shadcn/ui
-- Backend: Express 5
-- Smart contract: Stellar Soroban (WASM)
-- API validation: Zod
-- API codegen: Orval
-- DB: PostgreSQL + Drizzle ORM (optional; pool data is currently computed)
+Pool `0` is the default seeded Standard Pool (XLM / TESTUSD, bin step 25 bps, base fee 10 bps).
 
-## Run the project
+---
 
-1. Install workspace dependencies:
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Monorepo | pnpm workspaces |
+| Runtime | Node.js 24 |
+| Language | TypeScript 5.9 |
+| Frontend | React + Vite, TailwindCSS, shadcn/ui, Recharts, wouter |
+| Backend API | Express 5 |
+| Database | PostgreSQL + Drizzle ORM |
+| Validation | Zod v4, drizzle-zod |
+| API contract | OpenAPI 3 + Orval codegen |
+| Smart contracts | Rust + Soroban (Stellar) |
+
+---
+
+## Prerequisites
+
+Before cloning, make sure you have the following installed:
+
+- **Node.js 24+** — [nodejs.org](https://nodejs.org)
+- **pnpm 9+** — Install via `npm install -g pnpm`
+- **Rust + wasm32 target** *(only needed if you want to build/modify smart contracts)*
+  ```bash
+  rustup target add wasm32-unknown-unknown
+  ```
+- **Stellar CLI** *(only needed for contract deployment/seeding)*
+  ```bash
+  cargo install --locked stellar-cli --features opt
+  ```
+- **PostgreSQL** *(optional — pool data is computed, DB is not required for basic dev)*
+
+---
+
+## Installation
 
 ```bash
+# Clone the repository
+git clone https://github.com/your-org/stellarbin.git
+cd stellarbin
+
+# Install all workspace dependencies
 pnpm install
 ```
 
-2. Start the API server:
+---
 
+## Environment Setup
+
+Copy the example env files and fill in values:
+
+```bash
+cp artifacts/stellar-dlmm/.env.example artifacts/stellar-dlmm/.env
+cp artifacts/api-server/.env.example artifacts/api-server/.env
+```
+
+Key environment variables in `artifacts/stellar-dlmm/.env`:
+
+```env
+VITE_STELLAR_NETWORK=testnet
+VITE_STELLAR_RPC_URL=https://soroban-testnet.stellar.org
+VITE_STELLAR_HORIZON_URL=https://horizon-testnet.stellar.org
+VITE_DLMM_CONTRACT_ID=CCW5MVYJFJPBJNJY7GN6BHC5BQR47RXVIM2T2X4F3YSQC7MQ7J4GNESH
+VITE_VAULT_CONTRACT_ID=CCDVBRMT3BI65JV2C7AQJOSIGT76MNNTXSVYDKGXKPBSOKVWQRGKU7VI
+VITE_TOKEN_X_ADDRESS=CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC
+VITE_TOKEN_Y_ADDRESS=CCA733ILFGI7SESYWNBYTKHUJTJTSU2ORRT6SFNSDZWHYSE4WDLLDUND
+VITE_DEFAULT_POOL_ID=0
+```
+
+For `artifacts/api-server/.env`:
+
+```env
+PORT=5000
+DATABASE_URL=postgresql://localhost:5432/stellarbin   # optional
+```
+
+---
+
+## Running in Development Mode
+
+Open **two terminal windows** and run each service separately:
+
+**Terminal 1 — API server:**
 ```bash
 pnpm --filter @workspace/api-server run dev
 ```
+The API will be available at `http://localhost:5000`.
 
-3. Start the DeFi frontend:
-
+**Terminal 2 — Frontend:**
 ```bash
 pnpm --filter @workspace/stellar-dlmm run dev
 ```
+The frontend will be available at the port printed in the terminal (usually `http://localhost:5173`).
 
-4. Optional: typecheck the workspace:
+---
+
+## Other Useful Commands
 
 ```bash
+# Full typecheck across all packages
 pnpm run typecheck
-```
 
-5. Optional: build the full project:
-
-```bash
+# Build all packages
 pnpm run build
+
+# Regenerate API hooks and Zod schemas from the OpenAPI spec
+pnpm --filter @workspace/api-spec run codegen
 ```
 
-## Environment
+---
 
-- `DATABASE_URL` — Postgres connection string. The backend can run without a database because pool data is computed.
+## Smart Contract Development
 
-## Smart contracts and deployment
-
-Soroban contracts in `contracts/` can be built with:
+Contracts live in `contracts/`. To build:
 
 ```bash
 cd contracts
-cargo build --target wasm32-unknown-unknown --release
+RUSTFLAGS="--sysroot=/path/to/sysroot -C target-cpu=mvp" \
+  cargo build --target wasm32-unknown-unknown --release
 ```
 
-The main DLMM contract is in `contracts/dlmm/`, the math library is in `contracts/math/`, and the vault contract is in `contracts/vault/`.
+After building, optimize before deploying (raw wasm is rejected by the network):
 
-## Important notes
+```bash
+stellar contract optimize --wasm target/wasm32-unknown-unknown/release/<contract_name>.wasm
+```
 
-- After changing the OpenAPI spec, run codegen before modifying routes or frontend hooks.
-- `artifacts/stellar-dlmm` uses `@stellar/stellar-sdk` for Soroban integration.
-- Soroban contracts use `i128` fixed-point arithmetic and target `wasm32-unknown-unknown`.
+Deploy to testnet:
 
-## Direct references
+```bash
+stellar contract deploy \
+  --wasm target/wasm32-unknown-unknown/release/<contract_name>.optimized.wasm \
+  --network testnet \
+  --source <your-identity>
+```
 
-- `replit.md` — project summary and stack.
-- `SMART_CONTRACT_GUIDE.md` — smart contract integration, build, and deployment guide.
+To seed a fresh pool after deployment, use `contracts/scripts/seed_pool.sh`.
+
+---
+
+## Project Structure
+
+```
+stellarbin/
+├── artifacts/
+│   ├── stellar-dlmm/          # React + Vite frontend
+│   │   └── src/
+│   │       ├── pages/         # Swap, Pools, Pool Detail, Positions, Analytics, Create
+│   │       ├── components/    # UI components
+│   │       └── lib/           # stellar.ts, dlmm-client.ts, contracts.ts
+│   └── api-server/            # Express 5 REST API
+│       └── src/routes/        # pools, tokens, swap, transactions
+├── contracts/
+│   ├── dlmm/                  # Main DLMM Soroban contract
+│   ├── math/                  # Fixed-point math library
+│   └── vault/                 # Dynamic vault contract
+├── lib/
+│   ├── api-spec/              # OpenAPI 3 specification (source of truth)
+│   ├── api-client-react/      # Generated React Query hooks
+│   └── api-zod/               # Generated Zod validators
+└── scripts/                   # Shared utility scripts
+```
+
+---
+
+## Wallet Setup (Testnet)
+
+1. Install the [Freighter wallet extension](https://freighter.app) in your browser.
+2. Switch Freighter to **Testnet** mode.
+3. Fund your wallet using the [Stellar Testnet Friendbot](https://friendbot.stellar.org/?addr=YOUR_ADDRESS).
+4. For TESTUSD, use the in-app faucet button in the Add Liquidity modal.
+
+---
+
+## License
+
+MIT

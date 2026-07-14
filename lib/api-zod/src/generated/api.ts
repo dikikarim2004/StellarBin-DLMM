@@ -26,6 +26,7 @@ export const ListPoolsQueryParams = zod.object({
 
 export const ListPoolsResponseItem = zod.object({
   "id": zod.string(),
+  "category": zod.enum(['dlmm', 'amm']).describe('dlmm = our on-chain DLMM contract; amm = native Stellar DEX liquidity pool (aggregated from Horizon)'),
   "tokenX": zod.object({
   "symbol": zod.string(),
   "name": zod.string(),
@@ -51,7 +52,17 @@ export const ListPoolsResponseItem = zod.object({
   "binStep": zod.number(),
   "activeBinId": zod.number(),
   "currentPrice": zod.number().optional(),
-  "fee": zod.number().optional()
+  "fee": zod.number().optional(),
+  "reserveX": zod.number().optional(),
+  "reserveY": zod.number().optional(),
+  "totalShares": zod.number().optional().describe('Total LP shares\/pool shares outstanding (AMM pools from Horizon)'),
+  "externalUrl": zod.string().optional().describe('Link to view an AMM pool on stellar.expert'),
+  "volumeAvailable": zod.boolean().optional().describe('False when 24h volume\/APR is not indexed for this pool (shown as — in UI)'),
+  "dlmmPoolId": zod.number().optional().describe('Numeric pool_id inside the DLMM registry contract (dlmm pools only)'),
+  "isLaunchPool": zod.boolean().optional().describe('True when activationTs is in the future — pool accepts liquidity but swaps are gated (anti-snipe)'),
+  "activationTs": zod.number().optional().describe('Unix timestamp after which swaps are allowed. 0 = Standard Pool (active immediately)'),
+  "protocolFeeBps": zod.number().optional().describe('Platform\'s share of every swap fee, in bps of the fee (contract-wide, admin-adjustable)'),
+  "lpFeeBps": zod.number().optional().describe('LP\'s share of every swap fee, in bps of the fee (10000 - protocolFeeBps)')
 })
 export const ListPoolsResponse = zod.array(ListPoolsResponseItem)
 
@@ -65,6 +76,7 @@ export const GetPoolParams = zod.object({
 
 export const GetPoolResponse = zod.object({
   "id": zod.string(),
+  "category": zod.enum(['dlmm', 'amm']),
   "tokenX": zod.object({
   "symbol": zod.string(),
   "name": zod.string(),
@@ -94,7 +106,15 @@ export const GetPoolResponse = zod.object({
   "reserveX": zod.number(),
   "reserveY": zod.number(),
   "totalBins": zod.number(),
-  "contractAddress": zod.string().optional()
+  "contractAddress": zod.string().optional(),
+  "totalShares": zod.number().optional(),
+  "externalUrl": zod.string().optional(),
+  "volumeAvailable": zod.boolean().optional(),
+  "dlmmPoolId": zod.number().optional(),
+  "isLaunchPool": zod.boolean().optional(),
+  "activationTs": zod.number().optional(),
+  "protocolFeeBps": zod.number().optional(),
+  "lpFeeBps": zod.number().optional()
 })
 
 
@@ -244,6 +264,19 @@ export const GetSwapRouteResponse = zod.object({
 
 
 /**
+ * @summary Send testnet TESTUSD to a wallet (requires an existing trustline)
+ */
+export const RequestTestusdFaucetBody = zod.object({
+  "address": zod.string().describe('Destination Stellar account (G...) that already has a TESTUSD trustline')
+})
+
+export const RequestTestusdFaucetResponse = zod.object({
+  "txHash": zod.string(),
+  "amount": zod.string()
+})
+
+
+/**
  * @summary List indexed transactions (swaps, adds, removes)
  */
 export const ListTransactionsQueryParams = zod.object({
@@ -269,6 +302,25 @@ export const ListTransactionsResponse = zod.array(ListTransactionsResponseItem)
 
 
 /**
+ * @summary Recent swap events read directly from the DLMM contract (on-chain, cached briefly)
+ */
+export const GetPoolRecentSwapsParams = zod.object({
+  "poolId": zod.coerce.string()
+})
+
+export const GetPoolRecentSwapsResponseItem = zod.object({
+  "txHash": zod.string(),
+  "timestamp": zod.string(),
+  "address": zod.string(),
+  "xToY": zod.boolean().describe('true = tokenX sold for tokenY, false = tokenY sold for tokenX'),
+  "amountIn": zod.string().describe('Raw stroops (i128), as a string to avoid precision loss'),
+  "amountOut": zod.string().describe('Raw stroops (i128), as a string to avoid precision loss'),
+  "feePaid": zod.string().describe('Raw stroops (i128), as a string to avoid precision loss')
+})
+export const GetPoolRecentSwapsResponse = zod.array(GetPoolRecentSwapsResponseItem)
+
+
+/**
  * @summary Get all LP positions for a wallet address
  */
 export const GetUserPositionsParams = zod.object({
@@ -280,6 +332,7 @@ export const GetUserPositionsResponseItem = zod.object({
   "poolId": zod.string(),
   "pool": zod.object({
   "id": zod.string(),
+  "category": zod.enum(['dlmm', 'amm']).describe('dlmm = our on-chain DLMM contract; amm = native Stellar DEX liquidity pool (aggregated from Horizon)'),
   "tokenX": zod.object({
   "symbol": zod.string(),
   "name": zod.string(),
@@ -305,11 +358,23 @@ export const GetUserPositionsResponseItem = zod.object({
   "binStep": zod.number(),
   "activeBinId": zod.number(),
   "currentPrice": zod.number().optional(),
-  "fee": zod.number().optional()
+  "fee": zod.number().optional(),
+  "reserveX": zod.number().optional(),
+  "reserveY": zod.number().optional(),
+  "totalShares": zod.number().optional().describe('Total LP shares\/pool shares outstanding (AMM pools from Horizon)'),
+  "externalUrl": zod.string().optional().describe('Link to view an AMM pool on stellar.expert'),
+  "volumeAvailable": zod.boolean().optional().describe('False when 24h volume\/APR is not indexed for this pool (shown as — in UI)'),
+  "dlmmPoolId": zod.number().optional().describe('Numeric pool_id inside the DLMM registry contract (dlmm pools only)'),
+  "isLaunchPool": zod.boolean().optional().describe('True when activationTs is in the future — pool accepts liquidity but swaps are gated (anti-snipe)'),
+  "activationTs": zod.number().optional().describe('Unix timestamp after which swaps are allowed. 0 = Standard Pool (active immediately)'),
+  "protocolFeeBps": zod.number().optional().describe('Platform\'s share of every swap fee, in bps of the fee (contract-wide, admin-adjustable)'),
+  "lpFeeBps": zod.number().optional().describe('LP\'s share of every swap fee, in bps of the fee (10000 - protocolFeeBps)')
 }).optional(),
   "address": zod.string(),
   "binRangeLow": zod.number(),
   "binRangeHigh": zod.number(),
+  "binId": zod.number().optional().describe('The single bin this position occupies (DLMM positions are per-bin)'),
+  "shares": zod.number().optional().describe('LP shares held in the bin'),
   "liquidityX": zod.number(),
   "liquidityY": zod.number(),
   "valueUsd": zod.number(),

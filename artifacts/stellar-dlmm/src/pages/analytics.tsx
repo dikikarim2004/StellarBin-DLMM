@@ -21,25 +21,30 @@ const TIME_RANGES = [
 
 type TimeRangeLabel = (typeof TIME_RANGES)[number]["label"];
 
+function dayBucket(timestamp: string): string {
+  return timestamp.slice(0, 10);
+}
+
 function useProtocolHistory(poolIds: string[] | undefined) {
   return useQuery({
     queryKey: ["protocol-history", poolIds],
     queryFn: async (): Promise<HistoryPoint[]> => {
       const allStats = await Promise.all((poolIds ?? []).map((id) => getPoolStats(id)));
-      const byTimestamp = new Map<string, HistoryPoint>();
+      const byDay = new Map<string, HistoryPoint>();
       for (const stats of allStats) {
         for (const point of stats.data) {
-          const existing = byTimestamp.get(point.timestamp);
+          const key = dayBucket(point.timestamp);
+          const existing = byDay.get(key);
           if (existing) {
             existing.tvl += point.tvl;
             existing.volume += point.volume;
             existing.fees += point.fees;
           } else {
-            byTimestamp.set(point.timestamp, { timestamp: point.timestamp, tvl: point.tvl, volume: point.volume, fees: point.fees });
+            byDay.set(key, { timestamp: point.timestamp, tvl: point.tvl, volume: point.volume, fees: point.fees });
           }
         }
       }
-      return Array.from(byTimestamp.values()).sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+      return Array.from(byDay.values()).sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
     },
     enabled: !!poolIds && poolIds.length > 0,
   });

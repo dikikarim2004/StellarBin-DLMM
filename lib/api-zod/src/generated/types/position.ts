@@ -15,6 +15,10 @@ export interface Position {
   address: string;
   binRangeLow: number;
   binRangeHigh: number;
+  /** The single bin this position occupies (DLMM positions are per-bin) */
+  binId?: number;
+  /** LP shares held in the bin */
+  shares?: number;
   liquidityX: number;
   liquidityY: number;
   valueUsd: number;

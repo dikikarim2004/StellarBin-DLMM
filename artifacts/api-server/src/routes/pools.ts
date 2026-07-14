@@ -6,276 +6,155 @@ import {
   GetPoolStatsResponse,
   GetProtocolSummaryResponse,
   GetUserPositionsResponse,
+  GetPoolRecentSwapsResponse,
 } from "@workspace/api-zod";
-import { TOKENS } from "./tokens";
+import {
+  getAllPools,
+  getPoolById,
+  getPoolBins,
+  getProtocolSummary,
+  getUserPositions,
+  getRecentSwaps,
+} from "../lib/stellar-reader";
 
 const router = Router();
 
-const [XLM, USDC, yXLM, BTC, ETH, AQUA] = TOKENS;
-
-export const POOLS = [
-  {
-    id: "pool-xlm-usdc-001",
-    tokenX: XLM,
-    tokenY: USDC,
-    tvl: 4_821_340,
-    volume24h: 1_203_500,
-    fees24h: 3_610.5,
-    apr: 27.34,
-    binStep: 25,
-    activeBinId: 8388608,
-    currentPrice: 0.1142,
-    fee: 0.003,
-    reserveX: 21_203_500,
-    reserveY: 2_421_340,
-    totalBins: 200,
-    contractAddress: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCN3",
-  },
-  {
-    id: "pool-btc-usdc-002",
-    tokenX: BTC,
-    tokenY: USDC,
-    tvl: 9_234_120,
-    volume24h: 3_891_200,
-    fees24h: 11_673.6,
-    apr: 46.18,
-    binStep: 10,
-    activeBinId: 8392304,
-    currentPrice: 67420.5,
-    fee: 0.003,
-    reserveX: 68.42,
-    reserveY: 4_612_060,
-    totalBins: 300,
-    contractAddress: "CDBT2FC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHBTC",
-  },
-  {
-    id: "pool-eth-usdc-003",
-    tokenX: ETH,
-    tokenY: USDC,
-    tvl: 6_102_800,
-    volume24h: 2_312_000,
-    fees24h: 6_936,
-    apr: 41.52,
-    binStep: 15,
-    activeBinId: 8391200,
-    currentPrice: 3512.8,
-    fee: 0.003,
-    reserveX: 870.6,
-    reserveY: 3_051_400,
-    totalBins: 250,
-    contractAddress: "CDETH3FC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHETH",
-  },
-  {
-    id: "pool-xlm-yxlm-004",
-    tokenX: XLM,
-    tokenY: yXLM,
-    tvl: 1_892_400,
-    volume24h: 234_000,
-    fees24h: 702,
-    apr: 13.55,
-    binStep: 5,
-    activeBinId: 8388700,
-    currentPrice: 0.9532,
-    fee: 0.003,
-    reserveX: 8_298_000,
-    reserveY: 7_901_100,
-    totalBins: 100,
-    contractAddress: "CDYXLM3FC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHYX",
-  },
-  {
-    id: "pool-xlm-aqua-005",
-    tokenX: XLM,
-    tokenY: AQUA,
-    tvl: 892_100,
-    volume24h: 412_300,
-    fees24h: 1_236.9,
-    apr: 50.64,
-    binStep: 100,
-    activeBinId: 8380000,
-    currentPrice: 139.29,
-    fee: 0.003,
-    reserveX: 3_910_000,
-    reserveY: 2_445_122_000,
-    totalBins: 150,
-    contractAddress: "CDAQUA3FC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHAQU",
-  },
-];
-
-function generateBins(pool: (typeof POOLS)[0]) {
-  const bins = [];
-  const activeBin = pool.activeBinId;
-  const binStep = pool.binStep;
-  const totalBins = 40;
-  const startBin = activeBin - Math.floor(totalBins / 2);
-
-  for (let i = 0; i < totalBins; i++) {
-    const binId = startBin + i;
-    const distFromActive = i - Math.floor(totalBins / 2);
-    const isActive = binId === activeBin;
-
-    const price = pool.currentPrice * Math.pow(1 + binStep / 10000, distFromActive);
-
-    let liquidityX = 0;
-    let liquidityY = 0;
-
-    if (distFromActive <= 0) {
-      const falloff = Math.exp(-Math.abs(distFromActive) * 0.18);
-      liquidityY = pool.reserveY * 0.05 * falloff * (0.7 + Math.random() * 0.6);
-    }
-    if (distFromActive >= 0) {
-      const falloff = Math.exp(-Math.abs(distFromActive) * 0.18);
-      liquidityX = pool.reserveX * 0.05 * falloff * (0.7 + Math.random() * 0.6);
-    }
-    if (isActive) {
-      liquidityX = pool.reserveX * 0.08;
-      liquidityY = pool.reserveY * 0.08;
-    }
-
-    bins.push({
-      binId,
-      price,
-      liquidityX,
-      liquidityY,
-      isActive,
-      totalLiquidity: liquidityX * pool.currentPrice + liquidityY,
-    });
-  }
-  return bins;
-}
-
-function generateStats(poolId: string) {
-  const now = Date.now();
-  const data = [];
-  for (let i = 29; i >= 0; i--) {
-    const ts = new Date(now - i * 86_400_000);
-    const base = 4_000_000 + Math.random() * 1_000_000;
-    data.push({
-      timestamp: ts.toISOString(),
-      tvl: base,
-      volume: 800_000 + Math.random() * 600_000,
-      fees: 2_400 + Math.random() * 1_800,
-    });
-  }
-  return { poolId, period: "30d", data };
-}
-
-function generatePositions(address: string) {
-  return POOLS.slice(0, 3).map((pool, i) => ({
-    id: `pos-${address.slice(0, 8)}-${i}`,
-    poolId: pool.id,
-    pool,
-    address,
-    binRangeLow: pool.activeBinId - 10 - i * 3,
-    binRangeHigh: pool.activeBinId + 10 + i * 3,
-    liquidityX: pool.reserveX * 0.02 * (i + 1),
-    liquidityY: pool.reserveY * 0.02 * (i + 1),
-    valueUsd: 8_400 + i * 3_200,
-    unrealizedFees: 124.5 + i * 47.2,
-    strategy: (["spot", "curve", "bid_ask"] as const)[i % 3],
-  }));
-}
-
-// GET /pools
-router.get("/pools", (req, res) => {
+// GET /pools — real DLMM contract pool + native Stellar DEX (AMM) pools
+router.get("/pools", async (req, res) => {
   const { sortBy, search } = req.query as Record<string, string>;
-  let pools = [...POOLS];
+  try {
+    let pools = await getAllPools();
 
-  if (search) {
-    const q = search.toLowerCase();
-    pools = pools.filter(
-      (p) =>
-        p.tokenX.symbol.toLowerCase().includes(q) ||
-        p.tokenY.symbol.toLowerCase().includes(q)
-    );
-  }
+    if (search) {
+      const q = search.toLowerCase();
+      pools = pools.filter(
+        (p) =>
+          p.tokenX.symbol.toLowerCase().includes(q) ||
+          p.tokenY.symbol.toLowerCase().includes(q),
+      );
+    }
 
-  if (sortBy) {
-    pools.sort((a, b) => {
-      const ak = a[sortBy as keyof typeof a] as number;
-      const bk = b[sortBy as keyof typeof b] as number;
-      return bk - ak;
-    });
-  }
+    if (sortBy) {
+      pools = [...pools].sort((a, b) => {
+        const ak = a[sortBy as keyof typeof a] as number;
+        const bk = b[sortBy as keyof typeof b] as number;
+        return (bk ?? 0) - (ak ?? 0);
+      });
+    }
 
-  const parsed = ListPoolsResponse.safeParse(pools);
-  if (!parsed.success) {
-    req.log.error({ error: parsed.error }, "Pool list validation failed");
-    return res.status(500).json({ error: "Internal server error" });
+    const parsed = ListPoolsResponse.safeParse(pools);
+    if (!parsed.success) {
+      req.log.error({ error: parsed.error }, "Pool list validation failed");
+      return res.status(500).json({ error: "Internal server error" });
+    }
+    return res.json(parsed.data);
+  } catch (err) {
+    req.log.error({ err }, "Failed to load pools");
+    return res.status(502).json({ error: "Failed to load on-chain pool data" });
   }
-  res.json(parsed.data);
 });
 
-// GET /pools/summary
-router.get("/pools/summary", (_req, res) => {
-  const summary = {
-    totalTvl: POOLS.reduce((s, p) => s + p.tvl, 0),
-    totalVolume24h: POOLS.reduce((s, p) => s + p.volume24h, 0),
-    totalFees24h: POOLS.reduce((s, p) => s + p.fees24h, 0),
-    totalPools: POOLS.length,
-    totalTransactions24h: 4_821,
-    tvlChange24h: 3.12,
-    volumeChange24h: -1.87,
-  };
-  const parsed = GetProtocolSummaryResponse.safeParse(summary);
-  if (!parsed.success) {
-    return res.status(500).json({ error: "Internal server error" });
+// GET /pools/summary — protocol-wide totals from live pool data
+router.get("/pools/summary", async (req, res) => {
+  try {
+    const summary = await getProtocolSummary();
+    const parsed = GetProtocolSummaryResponse.safeParse(summary);
+    if (!parsed.success) {
+      req.log.error({ error: parsed.error }, "Summary validation failed");
+      return res.status(500).json({ error: "Internal server error" });
+    }
+    return res.json(parsed.data);
+  } catch (err) {
+    req.log.error({ err }, "Failed to load protocol summary");
+    return res.status(502).json({ error: "Failed to load on-chain summary" });
   }
-  res.json(parsed.data);
 });
 
 // GET /pools/:poolId
-router.get("/pools/:poolId", (req, res) => {
-  const pool = POOLS.find((p) => p.id === req.params.poolId);
-  if (!pool) {
-    return res.status(404).json({ error: "Pool not found" });
+router.get("/pools/:poolId", async (req, res) => {
+  try {
+    const pool = await getPoolById(req.params.poolId);
+    if (!pool) {
+      return res.status(404).json({ error: "Pool not found" });
+    }
+    const parsed = GetPoolResponse.safeParse(pool);
+    if (!parsed.success) {
+      req.log.error({ error: parsed.error }, "Pool validation failed");
+      return res.status(500).json({ error: "Internal server error" });
+    }
+    return res.json(parsed.data);
+  } catch (err) {
+    req.log.error({ err }, "Failed to load pool");
+    return res.status(502).json({ error: "Failed to load on-chain pool data" });
   }
-  const parsed = GetPoolResponse.safeParse(pool);
-  if (!parsed.success) {
-    req.log.error({ error: parsed.error }, "Pool validation failed");
-    return res.status(500).json({ error: "Internal server error" });
-  }
-  res.json(parsed.data);
 });
 
-// GET /pools/:poolId/bins
-router.get("/pools/:poolId/bins", (req, res) => {
-  const pool = POOLS.find((p) => p.id === req.params.poolId);
-  if (!pool) {
-    return res.status(404).json({ error: "Pool not found" });
+// GET /pools/:poolId/bins — real on-chain bin distribution (DLMM only)
+router.get("/pools/:poolId/bins", async (req, res) => {
+  try {
+    const bins = await getPoolBins(req.params.poolId);
+    if (bins === null) {
+      // AMM (Horizon) pools have no discrete bins; return an empty set.
+      return res.json([]);
+    }
+    const parsed = GetPoolBinsResponse.safeParse(bins);
+    if (!parsed.success) {
+      req.log.error({ error: parsed.error }, "Bins validation failed");
+      return res.status(500).json({ error: "Internal server error" });
+    }
+    return res.json(parsed.data);
+  } catch (err) {
+    req.log.error({ err }, "Failed to load bins");
+    return res.status(502).json({ error: "Failed to load on-chain bin data" });
   }
-  const bins = generateBins(pool);
-  const parsed = GetPoolBinsResponse.safeParse(bins);
-  if (!parsed.success) {
-    req.log.error({ error: parsed.error }, "Bins validation failed");
-    return res.status(500).json({ error: "Internal server error" });
-  }
-  res.json(parsed.data);
 });
 
-// GET /pools/:poolId/stats
+// GET /pools/:poolId/swaps — real SWAP events read live from the DLMM
+// contract via RPC getEvents (DLMM pools only; not realtime, briefly cached)
+router.get("/pools/:poolId/swaps", async (req, res) => {
+  try {
+    const swaps = await getRecentSwaps(req.params.poolId);
+    if (swaps === null) {
+      return res.status(404).json({ error: "Pool not found or not a DLMM registry pool" });
+    }
+    const parsed = GetPoolRecentSwapsResponse.safeParse(swaps);
+    if (!parsed.success) {
+      req.log.error({ error: parsed.error }, "Recent swaps validation failed");
+      return res.status(500).json({ error: "Internal server error" });
+    }
+    return res.json(parsed.data);
+  } catch (err) {
+    req.log.error({ err }, "Failed to load recent swaps");
+    return res.status(502).json({ error: "Failed to load on-chain swap events" });
+  }
+});
+
+// GET /pools/:poolId/stats — historical TVL/volume is not indexed on-chain,
+// so we return an empty series rather than fabricated history.
 router.get("/pools/:poolId/stats", (req, res) => {
-  const pool = POOLS.find((p) => p.id === req.params.poolId);
-  if (!pool) {
-    return res.status(404).json({ error: "Pool not found" });
-  }
-  const stats = generateStats(pool.id);
+  const stats = { poolId: req.params.poolId, period: "live", data: [] };
   const parsed = GetPoolStatsResponse.safeParse(stats);
   if (!parsed.success) {
     req.log.error({ error: parsed.error }, "Stats validation failed");
     return res.status(500).json({ error: "Internal server error" });
   }
-  res.json(parsed.data);
+  return res.json(parsed.data);
 });
 
-// GET /positions/:address
-router.get("/positions/:address", (req, res) => {
-  const positions = generatePositions(req.params.address);
-  const parsed = GetUserPositionsResponse.safeParse(positions);
-  if (!parsed.success) {
-    req.log.error({ error: parsed.error }, "Positions validation failed");
-    return res.status(500).json({ error: "Internal server error" });
+// GET /positions/:address — real per-user LP positions from the DLMM contract
+router.get("/positions/:address", async (req, res) => {
+  try {
+    const positions = await getUserPositions(req.params.address);
+    const parsed = GetUserPositionsResponse.safeParse(positions);
+    if (!parsed.success) {
+      req.log.error({ error: parsed.error }, "Positions validation failed");
+      return res.status(500).json({ error: "Internal server error" });
+    }
+    return res.json(parsed.data);
+  } catch (err) {
+    req.log.error({ err }, "Failed to load positions");
+    return res.status(502).json({ error: "Failed to load on-chain positions" });
   }
-  res.json(parsed.data);
 });
 
 export default router;

@@ -4,11 +4,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
-import { Activity, BarChart3, LayoutDashboard, ArrowLeftRight, Menu } from "lucide-react";
+import { Activity, BarChart3, LayoutDashboard, ArrowLeftRight, Menu, PlusCircle } from "lucide-react";
 import NotFound from "@/pages/not-found";
 import SwapPage from "@/pages/swap";
 import PoolsPage from "@/pages/pools";
 import PoolDetailPage from "@/pages/pool-detail";
+import CreatePoolPage from "@/pages/create-pool";
 import PositionsPage from "@/pages/positions";
 import AnalyticsPage from "@/pages/analytics";
 import { WalletProvider } from "@/contexts/wallet";
@@ -19,6 +20,7 @@ const queryClient = new QueryClient();
 const NAV_ITEMS = [
   { href: "/swap", label: "Swap", icon: ArrowLeftRight },
   { href: "/pools", label: "Pools", icon: LayoutDashboard },
+  { href: "/create", label: "Create", icon: PlusCircle },
   { href: "/positions", label: "Positions", icon: Activity },
   { href: "/analytics", label: "Analytics", icon: BarChart3 },
 ];
@@ -188,6 +190,7 @@ function Router() {
         <Route path="/swap" component={SwapPage} />
         <Route path="/pools" component={PoolsPage} />
         <Route path="/pools/:poolId" component={PoolDetailPage} />
+        <Route path="/create" component={CreatePoolPage} />
         <Route path="/positions" component={PositionsPage} />
         <Route path="/analytics" component={AnalyticsPage} />
         <Route component={NotFound} />

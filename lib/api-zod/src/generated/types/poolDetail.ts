@@ -5,10 +5,12 @@
  * Stellar DLMM Liquidity Protocol API
  * OpenAPI spec version: 0.1.0
  */
+import type { PoolDetailCategory } from './poolDetailCategory';
 import type { Token } from './token';
 
 export interface PoolDetail {
   id: string;
+  category: PoolDetailCategory;
   tokenX: Token;
   tokenY: Token;
   tvl: number;
@@ -23,4 +25,12 @@ export interface PoolDetail {
   reserveY: number;
   totalBins: number;
   contractAddress?: string;
+  totalShares?: number;
+  externalUrl?: string;
+  volumeAvailable?: boolean;
+  dlmmPoolId?: number;
+  isLaunchPool?: boolean;
+  activationTs?: number;
+  protocolFeeBps?: number;
+  lpFeeBps?: number;
 }

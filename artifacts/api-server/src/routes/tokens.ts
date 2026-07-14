@@ -58,6 +58,15 @@ export const TOKENS = [
     priceChange24h: 5.67,
     logoUrl: "https://assets.coingecko.com/coins/images/17217/small/aquarius.png",
   },
+  {
+    symbol: "TESTUSD",
+    name: "Test USD (live testnet SAC)",
+    address: "CCA733ILFGI7SESYWNBYTKHUJTJTSU2ORRT6SFNSDZWHYSE4WDLLDUND",
+    decimals: 7,
+    price: 1.0,
+    priceChange24h: 0,
+    logoUrl: "https://assets.coingecko.com/coins/images/6319/small/USD_Coin_icon.png",
+  },
 ];
 
 router.get("/tokens", (req, res) => {
@@ -66,7 +75,7 @@ router.get("/tokens", (req, res) => {
     req.log.error({ error: parsed.error }, "Token validation failed");
     return res.status(500).json({ error: "Internal server error" });
   }
-  res.json(parsed.data);
+  return res.json(parsed.data);
 });
 
 export default router;

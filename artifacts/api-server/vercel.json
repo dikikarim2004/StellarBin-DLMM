@@ -1,0 +1,24 @@
+{
+  "installCommand": "cd ../.. && pnpm install --frozen-lockfile",
+  "buildCommand": "cd ../.. && pnpm --filter @workspace/api-server run build && pnpm --filter @workspace/stellar-dlmm run build && rm -rf artifacts/api-server/public && cp -r artifacts/stellar-dlmm/dist/public artifacts/api-server/public",
+  "outputDirectory": "public",
+  "build": {
+    "env": {
+      "PORT": "3000",
+      "BASE_PATH": "/",
+      "VITE_STELLAR_NETWORK": "testnet",
+      "VITE_DLMM_CONTRACT_ID": "CCW5MVYJFJPBJNJY7GN6BHC5BQR47RXVIM2T2X4F3YSQC7MQ7J4GNESH",
+      "VITE_VAULT_CONTRACT_ID": "CCDVBRMT3BI65JV2C7AQJOSIGT76MNNTXSVYDKGXKPBSOKVWQRGKU7VI",
+      "VITE_MATH_CONTRACT_ID": "CB7U2EL6L4AR2IWANOSXDYVHWL3D3PD3XOZU6PUA4MDAVWCOT3AAVX4Z",
+      "VITE_DEFAULT_POOL_ID": "0",
+      "VITE_TOKEN_X_ADDRESS": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+      "VITE_TOKEN_X_SYMBOL": "XLM",
+      "VITE_TOKEN_Y_ADDRESS": "CCA733ILFGI7SESYWNBYTKHUJTJTSU2ORRT6SFNSDZWHYSE4WDLLDUND",
+      "VITE_TOKEN_Y_SYMBOL": "TESTUSD"
+    }
+  },
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api" },
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
+}

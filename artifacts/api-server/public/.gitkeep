@@ -1,0 +1,5 @@
+This directory intentionally left empty.
+Vercel's "Other" framework preset requires an output directory (default "public")
+to exist after the build step, even though this project is a pure serverless-API
+deployment with no static assets. All real traffic is handled by api/index.mjs
+(see vercel.json rewrites).

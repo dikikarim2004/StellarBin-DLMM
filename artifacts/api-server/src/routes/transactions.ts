@@ -1,17 +1,26 @@
 import { Router } from "express";
 import { ListTransactionsResponse } from "@workspace/api-zod";
-import { POOLS } from "./pools";
 
 const router = Router();
 
 const TX_TYPES = ["swap", "add_liquidity", "remove_liquidity"] as const;
+
+// Lightweight pool descriptors for the computed Analytics/recent-activity feed.
+// (Full protocol-wide on-chain transaction indexing is out of scope.)
+const DEMO_POOLS = [
+  { id: "pool-xlm-testusd-live", currentPrice: 1.0, activeBinId: 0 },
+  { id: "pool-xlm-usdc-001", currentPrice: 0.1142, activeBinId: 8388608 },
+  { id: "pool-btc-usdc-002", currentPrice: 67420.5, activeBinId: 8392304 },
+  { id: "pool-eth-usdc-003", currentPrice: 3512.8, activeBinId: 8391200 },
+  { id: "pool-xlm-aqua-005", currentPrice: 139.29, activeBinId: 8380000 },
+] as const;
 
 function generateTransactions(count = 50) {
   const txs = [];
   const now = Date.now();
 
   for (let i = 0; i < count; i++) {
-    const pool = POOLS[Math.floor(Math.random() * POOLS.length)];
+    const pool = DEMO_POOLS[Math.floor(Math.random() * DEMO_POOLS.length)]!;
     const type = TX_TYPES[Math.floor(Math.random() * TX_TYPES.length)];
     const ts = new Date(now - i * 4 * 60 * 1000);
     const tokenXAmount = Math.random() * 1000 + 10;
@@ -50,7 +59,7 @@ router.get("/transactions", (req, res) => {
     req.log.error({ error: parsed.error }, "Transaction validation failed");
     return res.status(500).json({ error: "Internal server error" });
   }
-  res.json(parsed.data);
+  return res.json(parsed.data);
 });
 
 export default router;

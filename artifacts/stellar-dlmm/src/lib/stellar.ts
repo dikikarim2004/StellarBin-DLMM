@@ -69,6 +69,11 @@ export function i32ToScVal(value: number): xdr.ScVal {
   return xdr.ScVal.scvI32(value);
 }
 
+/** Convert a non-negative JavaScript integer to a u64 ScVal (used for pool IDs / timestamps). */
+export function u64ToScVal(value: number | bigint): xdr.ScVal {
+  return xdr.ScVal.scvU64(xdr.Uint64.fromString(String(value)));
+}
+
 /** Convert a boolean to a ScVal. */
 export function boolToScVal(value: boolean): xdr.ScVal {
   return xdr.ScVal.scvBool(value);

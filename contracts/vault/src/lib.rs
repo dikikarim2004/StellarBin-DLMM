@@ -38,8 +38,6 @@ pub struct VaultConfig {
     pub asset: Address,
     /// Vault administrator.
     pub admin: Address,
-    /// Optional external yield integration (stub = None).
-    pub yield_integration: Option<Address>,
     /// Maximum total assets the vault will accept (circuit-breaker).
     pub deposit_cap: i128,
     /// Fee taken on yield profits (in bps, e.g. 500 = 5%).
@@ -49,6 +47,10 @@ pub struct VaultConfig {
 const KEY_CONFIG: Symbol = symbol_short!("VAULT_CFG");
 const KEY_ASSETS: Symbol = symbol_short!("TOTAL_ASS");
 const KEY_SHARES: Symbol = symbol_short!("TOTAL_SHR");
+// Stored separately (not inside VaultConfig) because soroban-sdk 20.x's
+// `#[contracttype]` derive does not support `Option<Address>` fields directly.
+// Presence of this key indicates the integration is configured.
+const KEY_YIELD_INTEGRATION: Symbol = symbol_short!("YIELD_INT");
 
 fn share_key(addr: &Address) -> (Symbol, Address) {
     (symbol_short!("SHARE"), addr.clone())
@@ -100,10 +102,11 @@ impl VaultContract {
         let config = VaultConfig {
             asset,
             admin,
-            yield_integration: None, // stub: integrate Blend here when ready
             deposit_cap,
             performance_fee_bps,
         };
+        // yield_integration intentionally left unset here: integrate Blend
+        // by writing an address to KEY_YIELD_INTEGRATION when ready.
         env.storage().persistent().set(&KEY_CONFIG, &config);
         env.storage().persistent().set(&KEY_ASSETS, &0i128);
         env.storage().persistent().set(&KEY_SHARES, &0i128);
@@ -200,7 +203,8 @@ impl VaultContract {
 
         // --- Yield integration stub ---
         // In a real integration, if assets_out > contract balance, we would
-        // call config.yield_integration to redeem from the lending protocol:
+        // load the integration address from KEY_YIELD_INTEGRATION and redeem
+        // from the lending protocol:
         //   BlendClient::new(&env, &integration).redeem(assets_out - balance);
         // For now we assume funds are always in the contract.
 
@@ -247,8 +251,9 @@ impl VaultContract {
         config.admin.require_auth();
         assert!(amount > 0, "zero amount");
 
-        if config.yield_integration.is_some() {
+        if env.storage().persistent().has(&KEY_YIELD_INTEGRATION) {
             // TODO: call Blend/lending pool supply function.
+            // let integration: Address = env.storage().persistent().get(&KEY_YIELD_INTEGRATION).unwrap();
             // BlendClient::new(&env, &integration).supply(&env.current_contract_address(), amount);
             env.events()
                 .publish((symbol_short!("ALLOC"),), (amount,));

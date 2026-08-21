@@ -3,7 +3,7 @@
 
 StellarBin is a full-stack **DLMM (Dynamic Liquidity Market Maker)** protocol built on the [Stellar](https://stellar.org) network using **Soroban** smart contracts. Inspired by Meteora on Solana, it enables concentrated liquidity across discrete price bins, dynamic fees that respond to market volatility, and permissionless pool creation — all on-chain.
 
-** Demo link :** https://stellarbin-dlmm.vercel.app/ 
+** Testnet link :** https://app.stellarbin.xyz
 
 > **⚠️ Testnet Notice:** StellarBin is currently deployed on **Stellar Testnet**. All tokens, transactions, and balances are test assets with no real value. Do not use mainnet wallets or real funds.
 

@@ -48,6 +48,9 @@ Thumbs.db
 .local/
 contracts/target/
 contracts/scripts/
+.env
+.env.*
+!.env.example
 artifacts/api-server/node_modules/
 artifacts/api-server/dist
 artifacts/mockup-sandbox/node_modules/

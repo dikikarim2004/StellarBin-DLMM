@@ -1,4 +1,4 @@
-# StellarBin — Dynamic Liquidity Market Maker on Stellar  xxx
+# StellarBin — Dynamic Liquidity Market Maker on Stellar
 
 StellarBin is a full-stack **DLMM (Dynamic Liquidity Market Maker)** protocol built on the [Stellar](https://stellar.org) network using **Soroban** smart contracts. Inspired by Meteora on Solana, it enables concentrated liquidity across discrete price bins, dynamic fees that respond to market volatility, and permissionless pool creation — all on-chain.
 

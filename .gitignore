@@ -44,6 +44,13 @@ Thumbs.db
 .cursor/rules/nx-rules.mdc
 .github/instructions/nx.instructions.md
 
-# Replit
 .cache/
 .local/
+contracts/target/
+contracts/scripts/
+.env
+.env.*
+!.env.example
+artifacts/api-server/node_modules/
+artifacts/api-server/dist
+artifacts/mockup-sandbox/node_modules/

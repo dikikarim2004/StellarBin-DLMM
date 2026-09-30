@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { Loader2, ShieldAlert, Droplets } from "lucide-react";
+import { Loader2, ShieldAlert, Droplets, Info } from "lucide-react";
 import { useWallet } from "@/contexts/wallet";
 import { useToast } from "@/hooks/use-toast";
 import { displayToStroops, stroopsToDisplay } from "@/lib/stellar";
@@ -34,6 +34,8 @@ interface LiquidityModalProps {
   onOpenChange: (open: boolean) => void;
   mode: "add" | "remove";
   binId: number;
+  /** Pool bin step in bps (e.g. 25 = 0.25%). Used to compute the token price ratio. */
+  binStep?: number;
   tokenXSymbol: string;
   tokenYSymbol: string;
   /** Numeric pool_id inside the DLMM registry contract. Defaults to the seeded Standard Pool. */
@@ -43,53 +45,44 @@ interface LiquidityModalProps {
 }
 
 const STRATEGIES: { id: LiquidityStrategy; label: string; description: string }[] = [
-  { id: "spot", label: "Spot", description: "Even liquidity across the whole range" },
+  { id: "spot", label: "Spot", description: "Even distribution across all bins" },
   { id: "curve", label: "Curve", description: "Concentrated near the active bin" },
   { id: "bidask", label: "Bid-Ask", description: "Concentrated at the range edges" },
 ];
 
-function rawStrategyWeight(strategy: LiquidityStrategy, offset: number, radius: number): number {
+function rawWeight(strategy: LiquidityStrategy, distance: number, radius: number): number {
   if (strategy === "spot") return 1;
-  if (strategy === "curve") return radius + 1 - Math.abs(offset);
-  return Math.abs(offset) + 1; // bidask
+  if (strategy === "curve") return radius + 1 - distance; // heavier near active bin
+  return distance + 1; // bid-ask: heavier at range edges
 }
 
-/** Normalized per-offset weights (sum = 1) for a symmetric range of `radius` bins on each side.
- * Used only for the visual distribution preview — actual token amounts use `tokenSplitWeights`
- * below, since the contract only allows one-sided deposits for off-active bins. */
-function strategyWeights(strategy: LiquidityStrategy, radius: number): number[] {
-  const offsets: number[] = [];
-  for (let o = -radius; o <= radius; o++) offsets.push(o);
-  const raw = offsets.map((o) => rawStrategyWeight(strategy, o, radius));
-  const sum = raw.reduce((a, b) => a + b, 0);
-  return raw.map((w) => w / sum);
-}
-
-/**
- * The contract only allows one-sided deposits for off-active bins:
- * bins above the active bin (offset > 0) may only hold token X, bins below
- * (offset < 0) may only hold token Y, and the active bin (offset === 0) can
- * hold both. This computes per-bin weights for each token independently,
- * normalized within its own eligible subset, so `amount_x`/`amount_y` sent
- * to the contract never violate that rule.
- */
-function tokenSplitWeights(
+/** Weights for bins at/above active bin (offsets 0..+radius) — receive token X (XLM). */
+function xOnlyWeights(
   strategy: LiquidityStrategy,
   radius: number
-): { offset: number; wX: number; wY: number }[] {
-  const offsets: number[] = [];
-  for (let o = -radius; o <= radius; o++) offsets.push(o);
+): { offset: number; weight: number }[] {
+  const offsets = Array.from({ length: radius + 1 }, (_, i) => i);
+  const raw = offsets.map((o) => rawWeight(strategy, o, radius));
+  const sum = raw.reduce((a, b) => a + b, 0);
+  return offsets.map((o, i) => ({ offset: o, weight: sum > 0 ? raw[i] / sum : 1 / (radius + 1) }));
+}
 
-  const xOffsets = offsets.filter((o) => o >= 0);
-  const yOffsets = offsets.filter((o) => o <= 0);
-  const xSum = xOffsets.reduce((a, o) => a + rawStrategyWeight(strategy, o, radius), 0);
-  const ySum = yOffsets.reduce((a, o) => a + rawStrategyWeight(strategy, o, radius), 0);
+/** Weights for bins strictly below active bin (offsets -radius..-1) — receive token Y (TESTUSD). */
+function yOnlyWeights(
+  strategy: LiquidityStrategy,
+  radius: number
+): { offset: number; weight: number }[] {
+  if (radius === 0) return [];
+  const offsets = Array.from({ length: radius }, (_, i) => -(i + 1)); // -1, -2, …, -radius
+  // distance from active bin = |offset|; use same weight formula
+  const raw = offsets.map((o) => rawWeight(strategy, -o, radius));
+  const sum = raw.reduce((a, b) => a + b, 0);
+  return offsets.map((o, i) => ({ offset: o, weight: sum > 0 ? raw[i] / sum : 1 / radius }));
+}
 
-  return offsets.map((o) => ({
-    offset: o,
-    wX: o >= 0 ? rawStrategyWeight(strategy, o, radius) / xSum : 0,
-    wY: o <= 0 ? rawStrategyWeight(strategy, o, radius) / ySum : 0,
-  }));
+/** Price of token X in terms of token Y at a given bin: (1 + binStep/10000)^binId */
+function computeBinPrice(binId: number, binStep: number): number {
+  return Math.pow(1 + binStep / 10_000, binId);
 }
 
 export function LiquidityModal({
@@ -97,6 +90,7 @@ export function LiquidityModal({
   onOpenChange,
   mode,
   binId,
+  binStep = 25,
   tokenXSymbol,
   tokenYSymbol,
   poolId = DEFAULT_POOL_ID,
@@ -108,7 +102,6 @@ export function LiquidityModal({
   const faucet = useRequestTestusdFaucet();
 
   const [amountX, setAmountX] = useState("");
-  const [amountY, setAmountY] = useState("");
   const [strategy, setStrategy] = useState<LiquidityStrategy>(initialStrategy);
   const [radius, setRadius] = useState(3);
   const [submitting, setSubmitting] = useState(false);
@@ -120,13 +113,25 @@ export function LiquidityModal({
   const [establishingTrustline, setEstablishingTrustline] = useState(false);
   const [requestingFaucet, setRequestingFaucet] = useState(false);
 
+  // Derived: price and auto-computed TESTUSD amount
+  const binPrice = computeBinPrice(binId, binStep);
+  const amountXNum = parseFloat(amountX || "0");
+  // When radius > 0, also deposit Y into bins below active bin.
+  // amountY = amountX * price (equal dollar value on both sides).
+  const amountYNum = radius > 0 ? amountXNum * binPrice : 0;
+  const computedAmountY = amountYNum > 0 ? amountYNum.toFixed(6) : "";
+
+  const needsYDeposit = radius > 0 && involvesTestusd;
+
   useEffect(() => {
     if (!open) {
       setTrustlineChecked(false);
       setStrategy(initialStrategy);
+      setAmountX("");
       return;
     }
-    if (mode !== "add" || !involvesTestusd || !wallet.address) {
+    // Only check trustline for add mode when depositing TESTUSD (radius > 0)
+    if (mode !== "add" || !needsYDeposit || !wallet.address) {
       setTrustlineChecked(true);
       setHasTrustline(true);
       return;
@@ -136,7 +141,22 @@ export function LiquidityModal({
       setHasTrustline(ok);
       setTrustlineChecked(true);
     });
-  }, [open, mode, involvesTestusd, wallet.address, initialStrategy]);
+  }, [open, mode, needsYDeposit, wallet.address, initialStrategy]);
+
+  // Re-check trustline when radius changes (may go from 0 → needsYDeposit)
+  useEffect(() => {
+    if (!open || mode !== "add" || !involvesTestusd || !wallet.address) return;
+    if (!needsYDeposit) {
+      setTrustlineChecked(true);
+      setHasTrustline(true);
+      return;
+    }
+    setTrustlineChecked(false);
+    hasTestusdTrustline(wallet.address).then((ok) => {
+      setHasTrustline(ok);
+      setTrustlineChecked(true);
+    });
+  }, [radius]);
 
   async function handleEstablishTrustline() {
     if (!wallet.address) return;
@@ -184,32 +204,55 @@ export function LiquidityModal({
     setSubmitting(true);
     try {
       if (mode === "add") {
-        if (!amountX || !amountY || parseFloat(amountX) <= 0 || parseFloat(amountY) <= 0) {
-          throw new Error(`Enter both ${tokenXSymbol} and ${tokenYSymbol} amounts`);
+        if (!amountX || amountXNum <= 0) {
+          throw new Error(`Enter an ${tokenXSymbol} amount to deposit`);
         }
-        const splits = tokenSplitWeights(strategy, radius);
-        const totalX = displayToStroops(amountX);
-        const totalY = displayToStroops(amountY);
 
-        setProgress({ done: 0, total: splits.length });
-        for (let i = 0; i < splits.length; i++) {
-          const { offset, wX, wY } = splits[i];
-          const amtX = BigInt(Math.floor(Number(totalX) * wX));
-          const amtY = BigInt(Math.floor(Number(totalY) * wY));
-          if (amtX <= 0n && amtY <= 0n) {
-            setProgress({ done: i + 1, total: splits.length });
-            continue;
+        const xSplits = xOnlyWeights(strategy, radius);
+        const ySplits = needsYDeposit ? yOnlyWeights(strategy, radius) : [];
+        const totalSteps = xSplits.length + ySplits.length;
+        setProgress({ done: 0, total: totalSteps });
+
+        const totalX = displayToStroops(amountX);
+        let done = 0;
+
+        // Deposit token X into bins at/above active bin (offsets 0..+radius)
+        for (const { offset, weight } of xSplits) {
+          const amtX = BigInt(Math.floor(Number(totalX) * weight));
+          if (amtX > 0n) {
+            const prepared = await buildAddLiquidityTransaction(
+              wallet.address,
+              binId + offset,
+              amtX,
+              0n,
+              poolId
+            );
+            const signedXdr = await wallet.signTransaction(prepared.toXDR());
+            await submitSignedTransaction(signedXdr);
           }
-          const prepared = await buildAddLiquidityTransaction(
-            wallet.address,
-            binId + offset,
-            amtX,
-            amtY,
-            poolId
-          );
-          const signedXdr = await wallet.signTransaction(prepared.toXDR());
-          await submitSignedTransaction(signedXdr);
-          setProgress({ done: i + 1, total: weights.length });
+          done++;
+          setProgress({ done, total: totalSteps });
+        }
+
+        // Deposit token Y into bins below active bin (offsets -radius..-1)
+        if (ySplits.length > 0 && amountYNum > 0) {
+          const totalY = displayToStroops(computedAmountY);
+          for (const { offset, weight } of ySplits) {
+            const amtY = BigInt(Math.floor(Number(totalY) * weight));
+            if (amtY > 0n) {
+              const prepared = await buildAddLiquidityTransaction(
+                wallet.address,
+                binId + offset,
+                0n,
+                amtY,
+                poolId
+              );
+              const signedXdr = await wallet.signTransaction(prepared.toXDR());
+              await submitSignedTransaction(signedXdr);
+            }
+            done++;
+            setProgress({ done, total: totalSteps });
+          }
         }
       } else {
         const prepared = await buildRemoveLiquidityTransaction(wallet.address, binId, poolId);
@@ -221,11 +264,10 @@ export function LiquidityModal({
         title: mode === "add" ? "Liquidity added on-chain" : "Liquidity removed on-chain",
         description:
           mode === "add"
-            ? `Deposited across ${radius * 2 + 1} bins using the ${strategy} strategy.`
+            ? `Deposited ${amountX} ${tokenXSymbol}${needsYDeposit && computedAmountY ? ` + ${parseFloat(computedAmountY).toFixed(4)} ${tokenYSymbol}` : ""} across ${radius * 2 + 1} bins.`
             : "Transaction confirmed on Stellar testnet.",
       });
       setAmountX("");
-      setAmountY("");
       await wallet.refreshBalance();
       onSuccess?.();
       onOpenChange(false);
@@ -242,11 +284,11 @@ export function LiquidityModal({
   }
 
   const needsTrustlineGate =
-    mode === "add" && involvesTestusd && trustlineChecked && !hasTrustline;
+    mode === "add" && needsYDeposit && trustlineChecked && !hasTrustline;
 
-  const weights = strategyWeights(strategy, radius);
-  const totalXNum = parseFloat(amountX || "0");
-  const totalYNum = parseFloat(amountY || "0");
+  const xWeights = xOnlyWeights(strategy, radius);
+  const yWeights = yOnlyWeights(strategy, radius);
+  const totalBins = xWeights.length + yWeights.length;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -257,7 +299,7 @@ export function LiquidityModal({
           </DialogTitle>
         </DialogHeader>
 
-        {mode === "add" && involvesTestusd && !trustlineChecked && (
+        {mode === "add" && needsYDeposit && !trustlineChecked && (
           <div className="py-6 flex justify-center">
             <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
           </div>
@@ -270,9 +312,8 @@ export function LiquidityModal({
               <div className="space-y-1">
                 <p className="font-medium text-amber-300">TESTUSD trustline required</p>
                 <p className="text-muted-foreground text-xs">
-                  {TOKEN_Y.symbol} is a classic-asset-backed token. Your wallet needs a one-time
-                  trustline before it can hold or receive it — this is why "Add Liquidity" failed
-                  before.
+                  Providing balanced liquidity also deposits {tokenYSymbol} into bins below the
+                  active bin. Your wallet needs a one-time trustline to hold it.
                 </p>
               </div>
             </div>
@@ -283,15 +324,18 @@ export function LiquidityModal({
               data-testid="button-establish-trustline"
             >
               {establishingTrustline ? (
-                <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Waiting for signature…</>
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Waiting for signature…
+                </>
               ) : (
                 "Establish TESTUSD trustline"
               )}
             </Button>
           </div>
-        ) : mode === "add" && trustlineChecked ? (
+        ) : mode === "add" && (trustlineChecked || !needsYDeposit) ? (
           <div className="space-y-4 py-2">
-            {involvesTestusd && (
+            {needsYDeposit && (
               <Button
                 variant="outline"
                 size="sm"
@@ -301,9 +345,15 @@ export function LiquidityModal({
                 data-testid="button-faucet-testusd"
               >
                 {requestingFaucet ? (
-                  <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Requesting…</>
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Requesting…
+                  </>
                 ) : (
-                  <><Droplets className="w-4 h-4 mr-2" />Get 500 TESTUSD (testnet faucet)</>
+                  <>
+                    <Droplets className="w-4 h-4 mr-2" />
+                    Get 500 TESTUSD (testnet faucet)
+                  </>
                 )}
               </Button>
             )}
@@ -340,7 +390,7 @@ export function LiquidityModal({
                   Bin range
                 </label>
                 <span className="text-xs font-mono">
-                  {radius * 2 + 1} bins (±{radius})
+                  {totalBins} bin{totalBins !== 1 ? "s" : ""} (±{radius})
                 </span>
               </div>
               <Slider
@@ -351,50 +401,93 @@ export function LiquidityModal({
                 onValueChange={([v]) => setRadius(v)}
                 data-testid="slider-bin-range"
               />
+              {/* Bin distribution preview: Y-side (left, dimmer) + X-side (right, primary) */}
               <div className="flex h-6 items-end gap-[2px]" data-testid="bin-distribution-preview">
-                {weights.map((w, i) => (
+                {yWeights
+                  .slice()
+                  .reverse()
+                  .map(({ offset, weight }) => (
+                    <div
+                      key={offset}
+                      className="flex-1 rounded-t bg-cyan-500/40"
+                      style={{ height: `${Math.max(8, weight * radius * 40)}%` }}
+                      title={`bin ${binId + offset} (${tokenYSymbol})`}
+                    />
+                  ))}
+                {xWeights.map(({ offset, weight }) => (
                   <div
-                    key={i}
+                    key={offset}
                     className="flex-1 rounded-t bg-primary/70"
-                    style={{ height: `${Math.max(8, w * weights.length * 40)}%` }}
-                    title={`bin ${binId + i - radius}`}
+                    style={{ height: `${Math.max(8, weight * (radius + 1) * 40)}%` }}
+                    title={`bin ${binId + offset} (${tokenXSymbol})`}
                   />
                 ))}
               </div>
+              {radius > 0 && (
+                <div className="flex justify-between text-[10px] text-muted-foreground">
+                  <span className="text-cyan-400/70">← {tokenYSymbol} bins</span>
+                  <span className="font-mono">active ({binId})</span>
+                  <span className="text-primary/70">{tokenXSymbol} bins →</span>
+                </div>
+              )}
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1">
-                <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Total {tokenXSymbol}
-                </label>
+            {/* Amount input: only base token (XLM) */}
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                You deposit
+              </label>
+              <div className="relative">
                 <Input
                   type="number"
                   placeholder="0.00"
                   value={amountX}
                   onChange={(e) => setAmountX(e.target.value)}
+                  className="pr-16"
                   data-testid="input-liquidity-amount-x"
                 />
-              </div>
-              <div className="space-y-1">
-                <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Total {tokenYSymbol}
-                </label>
-                <Input
-                  type="number"
-                  placeholder="0.00"
-                  value={amountY}
-                  onChange={(e) => setAmountY(e.target.value)}
-                  data-testid="input-liquidity-amount-y"
-                />
+                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-semibold text-muted-foreground pointer-events-none">
+                  {tokenXSymbol}
+                </span>
               </div>
             </div>
 
-            {(totalXNum > 0 || totalYNum > 0) && (
-              <p className="text-[11px] text-muted-foreground">
-                Deposits will be split across {radius * 2 + 1} bins per the {strategy} weighting
-                and submitted as {radius * 2 + 1} sequential transactions (Soroban allows one
-                contract call per transaction).
+            {/* Auto-computed quote token amount (shown read-only when radius > 0) */}
+            {needsYDeposit && (
+              <div className="space-y-1">
+                <div className="flex items-center gap-1.5">
+                  <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                    Auto-paired
+                  </label>
+                  <Info className="w-3 h-3 text-muted-foreground" />
+                </div>
+                <div className="relative">
+                  <Input
+                    type="number"
+                    readOnly
+                    placeholder="0.00"
+                    value={computedAmountY}
+                    className="pr-16 bg-secondary/50 text-muted-foreground cursor-default"
+                    data-testid="input-liquidity-amount-y"
+                  />
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-semibold text-muted-foreground pointer-events-none">
+                    {tokenYSymbol}
+                  </span>
+                </div>
+                <p className="text-[11px] text-muted-foreground flex items-center gap-1">
+                  <Info className="w-3 h-3 shrink-0" />
+                  Calculated at current price ({binPrice.toFixed(4)} {tokenYSymbol}/{tokenXSymbol}).
+                  {tokenYSymbol} goes into bins below the active bin, enabling{" "}
+                  {tokenXSymbol}→{tokenYSymbol} swaps.
+                </p>
+              </div>
+            )}
+
+            {radius === 0 && (
+              <p className="text-[11px] text-muted-foreground flex items-center gap-1">
+                <Info className="w-3 h-3 shrink-0" />
+                At range ±0 only the active bin is used — deposit is {tokenXSymbol}-only. Increase
+                the range to also provide {tokenYSymbol} liquidity.
               </p>
             )}
           </div>
@@ -411,7 +504,7 @@ export function LiquidityModal({
             disabled={
               submitting ||
               !wallet.connected ||
-              (mode === "add" && (needsTrustlineGate || !trustlineChecked))
+              (mode === "add" && (needsTrustlineGate || (needsYDeposit && !trustlineChecked)))
             }
             data-testid="button-confirm-liquidity"
           >
@@ -425,7 +518,7 @@ export function LiquidityModal({
             ) : !wallet.connected ? (
               "Connect wallet to continue"
             ) : mode === "add" ? (
-              `Confirm Add Liquidity (${radius * 2 + 1} bin${radius > 0 ? "s" : ""})`
+              `Add liquidity (${totalBins} bin${totalBins !== 1 ? "s" : ""})`
             ) : (
               "Confirm Remove Liquidity"
             )}
@@ -436,5 +529,4 @@ export function LiquidityModal({
   );
 }
 
-// Re-export for display helpers used elsewhere (e.g. estimated per-bin amounts).
 export { stroopsToDisplay };

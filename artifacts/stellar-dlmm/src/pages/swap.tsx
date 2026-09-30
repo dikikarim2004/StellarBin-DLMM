@@ -1,10 +1,20 @@
 import { useState, useEffect, useRef } from "react";
-import { useGetPoolRecentSwaps } from "@workspace/api-client-react";
+import { listPools, useGetPoolRecentSwaps } from "@workspace/api-client-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ArrowDownUp, Settings, AlertTriangle, CheckCircle2, ChevronDown, Loader2, ArrowDownRight, ArrowUpRight } from "lucide-react";
+import {
+  ArrowDownUp,
+  Settings,
+  AlertTriangle,
+  CheckCircle2,
+  ChevronDown,
+  Loader2,
+  ArrowDownRight,
+  ArrowUpRight,
+  Route,
+} from "lucide-react";
 import { useWallet } from "@/contexts/wallet";
 import { WalletModal } from "@/components/wallet-modal";
 import { useToast } from "@/hooks/use-toast";
@@ -22,7 +32,6 @@ const DEFAULT_POOL_RECORD_ID = `dlmm-${DEFAULT_POOL_ID}`;
 
 export default function SwapPage() {
   const tokens = DEMO_POOL_TOKENS;
-  const { data: recentSwaps, isLoading: swapsLoading } = useGetPoolRecentSwaps(DEFAULT_POOL_RECORD_ID);
   const wallet = useWallet();
   const { toast } = useToast();
 
@@ -37,6 +46,8 @@ export default function SwapPage() {
   const [quote, setQuote] = useState<SwapQuote | null>(null);
   const [quotePending, setQuotePending] = useState(false);
   const [quoteError, setQuoteError] = useState<string | null>(null);
+  const [bestPoolId, setBestPoolId] = useState<number | null>(null);
+  const [poolsTriedCount, setPoolsTriedCount] = useState(0);
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -47,25 +58,76 @@ export default function SwapPage() {
 
   const tokenInBalance = tokenIn ? getWalletTokenBalance(wallet, tokenIn.symbol) : null;
 
-  // Debounced REAL on-chain quote via simulate_swap (read-only contract call)
+  const recentSwapsPoolId = bestPoolId !== null ? `dlmm-${bestPoolId}` : DEFAULT_POOL_RECORD_ID;
+  const { data: recentSwaps, isLoading: swapsLoading } = useGetPoolRecentSwaps(recentSwapsPoolId);
+
+  // Debounced REAL on-chain quote — fetches fresh pool list then tries all DLMM pools in parallel
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     setQuote(null);
     setQuoteError(null);
+    setBestPoolId(null);
+    setPoolsTriedCount(0);
     if (!tokenInId || !tokenOutId || !amountIn || parseFloat(amountIn) <= 0) return;
+
     debounceRef.current = setTimeout(async () => {
       setQuotePending(true);
       try {
         const amountInStroops = displayToStroops(amountIn);
-        const result = await getOnChainSwapQuote(xToY, amountInStroops);
-        setQuote(result);
+
+        // Fetch fresh pool list inside the effect so routing never uses stale cache
+        const allPools = await listPools();
+        const candidatePoolIds = allPools
+          .filter(
+            (p) =>
+              p.category === "dlmm" &&
+              p.dlmmPoolId !== undefined &&
+              // For x→y (sell XLM, get TESTUSD) we need TESTUSD in pool (reserveY)
+              // For y→x (sell TESTUSD, get XLM) we need XLM in pool (reserveX)
+              (xToY ? (p.reserveY ?? 0) > 0.0001 : (p.reserveX ?? 0) > 0.0001)
+          )
+          .map((p) => p.dlmmPoolId as number);
+
+        // If no pool has the required reserve, still try DEFAULT_POOL_ID for a meaningful error
+        const poolsToTry = candidatePoolIds.length > 0 ? candidatePoolIds : [DEFAULT_POOL_ID];
+        setPoolsTriedCount(poolsToTry.length);
+
+        // Try all candidate pools in parallel, pick the best output
+        const results = await Promise.allSettled(
+          poolsToTry.map(async (poolId) => {
+            const q = await getOnChainSwapQuote(xToY, amountInStroops, poolId);
+            return { poolId, quote: q };
+          })
+        );
+
+        let best: { poolId: number; quote: SwapQuote } | null = null;
+        for (const r of results) {
+          if (r.status === "fulfilled" && r.value.quote.amountOut > 0n) {
+            if (!best || r.value.quote.amountOut > best.quote.amountOut) {
+              best = r.value;
+            }
+          }
+        }
+
+        if (best) {
+          setQuote(best.quote);
+          setBestPoolId(best.poolId);
+        } else {
+          setQuote(null);
+          setBestPoolId(null);
+          setQuoteError(
+            "No liquidity available for this swap. All pools have insufficient reserves."
+          );
+        }
       } catch (err) {
         setQuoteError(err instanceof Error ? err.message : "Quote failed");
       } finally {
         setQuotePending(false);
       }
     }, 400);
-    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
   }, [tokenInId, tokenOutId, amountIn, xToY]);
 
   function handleMaxAmount() {
@@ -78,10 +140,14 @@ export default function SwapPage() {
     setTokenOutId(tokenInId);
     setAmountIn(quote ? stroopsToDisplay(quote.amountOut) : "");
     setQuote(null);
+    setBestPoolId(null);
   }
 
   async function handleConfirmSwap() {
-    if (!wallet.connected || !wallet.address) { setWalletModalOpen(true); return; }
+    if (!wallet.connected || !wallet.address) {
+      setWalletModalOpen(true);
+      return;
+    }
     if (!quote) return;
     setSigning(true);
     try {
@@ -89,21 +155,24 @@ export default function SwapPage() {
       const slippageBps = BigInt(Math.round(parseFloat(effectiveSlippage) * 100));
       const minAmountOut = quote.amountOut - (quote.amountOut * slippageBps) / 10_000n;
 
+      const routedPoolId = bestPoolId ?? DEFAULT_POOL_ID;
       const prepared = await buildSwapTransaction(
         wallet.address,
         xToY,
         amountInStroops,
-        minAmountOut
+        minAmountOut,
+        routedPoolId
       );
       const signedXdr = await wallet.signTransaction(prepared.toXDR());
       const result = await submitSignedSwap(signedXdr);
 
       toast({
         title: "Swap confirmed on-chain",
-        description: `Received ${stroopsToDisplay(result.amountOut)} ${tokenOut?.symbol} (fee: ${stroopsToDisplay(result.feePaid)})`,
+        description: `Received ${stroopsToDisplay(result.amountOut)} ${tokenOut?.symbol} (fee: ${stroopsToDisplay(result.feePaid)}) via Pool #${routedPoolId}`,
       });
       setAmountIn("");
       setQuote(null);
+      setBestPoolId(null);
       await wallet.refreshBalance();
     } catch (err) {
       toast({
@@ -141,7 +210,10 @@ export default function SwapPage() {
             {SLIPPAGE_PRESETS.map((p) => (
               <button
                 key={p}
-                onClick={() => { setSlippage(p); setCustomSlippage(""); }}
+                onClick={() => {
+                  setSlippage(p);
+                  setCustomSlippage("");
+                }}
                 className={`px-3 py-1.5 rounded-md text-sm font-mono transition-colors ${
                   slippage === p && !customSlippage
                     ? "bg-primary text-primary-foreground"
@@ -161,7 +233,9 @@ export default function SwapPage() {
                 onChange={(e) => setCustomSlippage(e.target.value)}
                 data-testid="input-slippage-custom"
               />
-              <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">%</span>
+              <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">
+                %
+              </span>
             </div>
           </div>
         </Card>
@@ -171,7 +245,9 @@ export default function SwapPage() {
       <Card className="p-4 border-border bg-card" data-testid="card-swap">
         {/* You pay */}
         <div className="space-y-1 pb-2">
-          <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">You pay</label>
+          <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+            You pay
+          </label>
           <div className="flex gap-2 items-center">
             <Input
               type="number"
@@ -222,7 +298,9 @@ export default function SwapPage() {
 
         {/* You receive */}
         <div className="space-y-1 pb-4">
-          <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">You receive</label>
+          <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+            You receive
+          </label>
           <div className="flex gap-2 items-center">
             <div className="flex-1 relative">
               <Input
@@ -250,10 +328,32 @@ export default function SwapPage() {
         {/* Quote breakdown (real on-chain simulate_swap result) */}
         {quote && (
           <div className="border border-border rounded-md p-3 space-y-2 text-sm mb-4 bg-secondary/30">
-            <QuoteRow label="Minimum received" value={`${stroopsToDisplay(quote.amountOut)} ${tokenOut?.symbol ?? ""}`} />
-            <QuoteRow label="Swap fee" value={`${stroopsToDisplay(quote.feePaid)} ${tokenIn?.symbol ?? ""}`} />
+            <QuoteRow
+              label="Minimum received"
+              value={`${stroopsToDisplay(quote.amountOut)} ${tokenOut?.symbol ?? ""}`}
+            />
+            <QuoteRow
+              label="Swap fee"
+              value={`${stroopsToDisplay(quote.feePaid)} ${tokenIn?.symbol ?? ""}`}
+            />
             <QuoteRow label="Bins crossed" value={`${quote.binsCrossed}`} />
             <QuoteRow label="Final bin" value={`${quote.finalBin}`} />
+            {bestPoolId !== null && (
+              <div className="flex justify-between items-center pt-1 border-t border-border/50">
+                <span className="text-muted-foreground flex items-center gap-1">
+                  <Route className="w-3 h-3" />
+                  Route
+                </span>
+                <span className="font-mono tabular-nums text-primary font-medium">
+                  Pool #{bestPoolId}
+                  {poolsTriedCount > 1 && (
+                    <span className="text-muted-foreground font-normal ml-1">
+                      (best of {poolsTriedCount})
+                    </span>
+                  )}
+                </span>
+              </div>
+            )}
           </div>
         )}
 
@@ -273,12 +373,23 @@ export default function SwapPage() {
             data-testid="button-confirm-swap"
           >
             {signing ? (
-              <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Waiting for signature…</>
+              <>
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                Waiting for signature…
+              </>
             ) : quotePending ? (
-              <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Getting quote…</>
+              <>
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                Finding best route…
+              </>
             ) : quote ? (
-              <><CheckCircle2 className="w-4 h-4 mr-2" />Confirm Swap</>
-            ) : "Swap"}
+              <>
+                <CheckCircle2 className="w-4 h-4 mr-2" />
+                Confirm Swap
+              </>
+            ) : (
+              "Swap"
+            )}
           </Button>
         ) : (
           <Button
@@ -291,12 +402,21 @@ export default function SwapPage() {
         )}
       </Card>
 
-      {/* Recent Swaps — real SWAP events read from the DLMM contract (not realtime) */}
+      {/* Recent Swaps — real SWAP events from the best routed pool */}
       <div className="space-y-3">
-        <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Recent Swaps</h3>
+        <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
+          Recent Swaps
+          {bestPoolId !== null && (
+            <span className="ml-2 normal-case font-normal text-primary">
+              · Pool #{bestPoolId}
+            </span>
+          )}
+        </h3>
         {swapsLoading ? (
           <div className="space-y-2">
-            {[...Array(4)].map((_, i) => <Skeleton key={i} className="h-11 w-full" />)}
+            {[...Array(4)].map((_, i) => (
+              <Skeleton key={i} className="h-11 w-full" />
+            ))}
           </div>
         ) : recentSwaps && recentSwaps.length > 0 ? (
           <div className="space-y-1.5">
@@ -315,7 +435,9 @@ export default function SwapPage() {
                     ) : (
                       <ArrowDownRight className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
                     )}
-                    <span className="font-mono text-xs text-muted-foreground">{swap.txHash.slice(0, 8)}…</span>
+                    <span className="font-mono text-xs text-muted-foreground">
+                      {swap.txHash.slice(0, 8)}…
+                    </span>
                   </div>
                   <span className="font-mono tabular-nums text-xs text-right">
                     {stroopsToDisplay(BigInt(swap.amountIn))} {inSymbol}
@@ -327,7 +449,9 @@ export default function SwapPage() {
             })}
           </div>
         ) : (
-          <p className="text-xs text-muted-foreground px-1">No recent on-chain swaps found for this pool.</p>
+          <p className="text-xs text-muted-foreground px-1">
+            No recent on-chain swaps found for this pool.
+          </p>
         )}
       </div>
 
@@ -340,9 +464,6 @@ export default function SwapPage() {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Looks up the connected wallet's balance for a token symbol (XLM is tracked
- * separately from Horizon's non-native balance list). Returns null if the
- * wallet isn't connected or holds no trustline/balance for that asset. */
 function getWalletTokenBalance(
   wallet: { xlmBalance: string | null; tokenBalances: Array<{ asset: string; balance: string }> },
   symbol: string
@@ -352,7 +473,15 @@ function getWalletTokenBalance(
   return match ? match.balance : null;
 }
 
-function QuoteRow({ label, value, valueCls = "" }: { label: string; value: string; valueCls?: string }) {
+function QuoteRow({
+  label,
+  value,
+  valueCls = "",
+}: {
+  label: string;
+  value: string;
+  valueCls?: string;
+}) {
   return (
     <div className="flex justify-between items-center">
       <span className="text-muted-foreground">{label}</span>
@@ -386,7 +515,9 @@ function TokenSelect({
         {tokens
           .filter((t) => t.address !== exclude)
           .map((t) => (
-            <option key={t.address} value={t.address}>{t.symbol}</option>
+            <option key={t.address} value={t.address}>
+              {t.symbol}
+            </option>
           ))}
       </select>
       <ChevronDown className="absolute right-1.5 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground pointer-events-none" />

@@ -66,6 +66,18 @@ export default defineConfig({
     fs: {
       strict: true,
     },
+    // In local dev the frontend (this Vite server) and the API server run as
+    // two separate processes on two separate ports. The app calls relative
+    // "/api/..." paths (they resolve same-origin in production, e.g. Vercel),
+    // so without this proxy those requests hit this Vite server instead of
+    // the API server, which silently returns index.html (200, text/html)
+    // instead of a 404/JSON error.
+    proxy: {
+      "/api": {
+        target: process.env.API_PROXY_TARGET ?? "http://localhost:5000",
+        changeOrigin: true,
+      },
+    },
   },
   preview: {
     port,

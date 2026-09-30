@@ -1,9 +1,6 @@
-# StellarBin — Dynamic Liquidity Market Maker on Stellar
-
+# StellarBin — Dynamic Liquidity Market Maker on Stellar  xxx
 
 StellarBin is a full-stack **DLMM (Dynamic Liquidity Market Maker)** protocol built on the [Stellar](https://stellar.org) network using **Soroban** smart contracts. Inspired by Meteora on Solana, it enables concentrated liquidity across discrete price bins, dynamic fees that respond to market volatility, and permissionless pool creation — all on-chain.
-
-**Testnet link :** https://app.stellarbin.xyz
 
 > **⚠️ Testnet Notice:** StellarBin is currently deployed on **Stellar Testnet**. All tokens, transactions, and balances are test assets with no real value. Do not use mainnet wallets or real funds.
 
@@ -27,9 +24,9 @@ StellarBin is a full-stack **DLMM (Dynamic Liquidity Market Maker)** protocol bu
 | **Vault** | `CCDVBRMT3BI65JV2C7AQJOSIGT76MNNTXSVYDKGXKPBSOKVWQRGKU7VI` |
 | **Math library** | `CB7U2EL6L4AR2IWANOSXDYVHWL3D3PD3XOZU6PUA4MDAVWCOT3AAVX4Z` |
 | **Native XLM (SAC)** | `CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC` |
-| **TESTUSD (SAC)** | `CCA733ILFGI7SESYWNBYTKHUJTJTSU2ORRT6SFNSDZWHYSE4WDLLDUND` |
+| **USDC (SAC)** | `GA5SH5Q6GUB5J3TNQ55I3B7FEOQJQTRJRD3OKNYRGEE323U3BYGLVAQO` |
 
-Pool `0` is the default seeded Standard Pool (XLM / TESTUSD, bin step 25 bps, base fee 10 bps).
+Pool `0` is the default seeded Standard Pool (XLM / USDC, bin step 25 bps, base fee 10 bps).
 
 ---
 
@@ -203,7 +200,7 @@ stellarbin/
 1. Install the [Freighter wallet extension](https://freighter.app) in your browser.
 2. Switch Freighter to **Testnet** mode.
 3. Fund your wallet using the [Stellar Testnet Friendbot](https://friendbot.stellar.org/?addr=YOUR_ADDRESS).
-4. For TESTUSD, use the in-app faucet button in the Add Liquidity modal.
+4. For USDC, use the in-app faucet button in the Add Liquidity modal.
 
 ---
 

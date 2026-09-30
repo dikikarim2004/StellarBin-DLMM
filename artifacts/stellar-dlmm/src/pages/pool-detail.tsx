@@ -180,6 +180,7 @@ export default function PoolDetailPage() {
           onOpenChange={(o) => setLiquidityModal(o ? liquidityModal : null)}
           mode={liquidityModal}
           binId={pool.activeBinId}
+          binStep={pool.binStep}
           tokenXSymbol={pool.tokenX.symbol}
           tokenYSymbol={pool.tokenY.symbol}
           poolId={pool.dlmmPoolId}

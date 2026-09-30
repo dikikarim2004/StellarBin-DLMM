@@ -270,15 +270,68 @@ function testUsdToken(): Token {
   };
 }
 
-/** Resolves a contract token address to a display Token. Falls back to a
- * generic entry (no reliable USD price) for tokens created via `create_pool`
- * that aren't one of the two seeded testnet assets. */
-function tokenFromAddress(address: string, xlmPrice: number): Token {
+// ---------------------------------------------------------------------------
+// SEP-41 token metadata resolution (symbol / name via on-chain call)
+// ---------------------------------------------------------------------------
+
+/** In-memory cache: contract address → { symbol, name } */
+const tokenMetaCache = new Map<string, { symbol: string; name: string }>();
+
+/**
+ * Calls the SEP-41 `symbol()` (and optionally `name()`) function on any
+ * Soroban token contract. All SAC contracts implement these, so XLM/TESTUSD
+ * and any custom token created via `stellar contract asset deploy` will work.
+ * Results are cached permanently for the lifetime of the server process.
+ */
+async function fetchTokenMeta(contractAddress: string): Promise<{ symbol: string; name: string }> {
+  const cached = tokenMetaCache.get(contractAddress);
+  if (cached) return cached;
+
+  async function callStringFn(fn: string): Promise<string | null> {
+    try {
+      const server = getRpc();
+      const account = await server.getAccount(SOURCE_ACCOUNT);
+      const contract = new Contract(contractAddress);
+      const tx = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(contract.call(fn))
+        .setTimeout(30)
+        .build();
+      const sim = await server.simulateTransaction(tx);
+      if (rpc.Api.isSimulationError(sim) || !sim.result) return null;
+      const val = scValToNative(sim.result.retval);
+      return typeof val === "string" && val.length > 0 ? val : null;
+    } catch {
+      return null;
+    }
+  }
+
+  const [symbol, name] = await Promise.all([
+    callStringFn("symbol"),
+    callStringFn("name"),
+  ]);
+
+  const shortAddr = `${contractAddress.slice(0, 4)}…${contractAddress.slice(-4)}`;
+  const meta = {
+    symbol: symbol ?? shortAddr,
+    name: name ?? symbol ?? "Custom token",
+  };
+  tokenMetaCache.set(contractAddress, meta);
+  return meta;
+}
+
+/** Resolves a contract token address to a display Token.
+ * For known tokens (XLM, TESTUSD) returns immediately.
+ * For custom tokens calls symbol()/name() on-chain (cached). */
+async function resolveToken(address: string, xlmPrice: number): Promise<Token> {
   if (address === NATIVE_XLM_SAC) return xlmToken(xlmPrice);
   if (address === TESTUSD_SAC) return testUsdToken();
+  const meta = await fetchTokenMeta(address);
   return {
-    symbol: `${address.slice(0, 4)}…${address.slice(-4)}`,
-    name: "Custom token",
+    symbol: meta.symbol,
+    name: meta.name,
     address,
     decimals: 7,
     price: 0,
@@ -317,8 +370,10 @@ async function readDlmmPool(poolId: number): Promise<PoolRecord> {
   const nowSec = Math.floor(Date.now() / 1000);
   const isLaunchPool = activationTs > 0;
 
-  const tokenX = tokenFromAddress(config.token_x, xlmPrice);
-  const tokenY = tokenFromAddress(config.token_y, xlmPrice);
+  const [tokenX, tokenY] = await Promise.all([
+    resolveToken(config.token_x, xlmPrice),
+    resolveToken(config.token_y, xlmPrice),
+  ]);
 
   let reserveX = 0;
   let reserveY = 0;
@@ -380,8 +435,10 @@ async function readDlmmBins(poolId: number): Promise<BinRecord[]> {
   ]);
   const binStep = Number(config.bin_step_bps);
   const activeBinId = Number(activeBinRaw);
-  const tokenX = tokenFromAddress(config.token_x, xlmPrice);
-  const tokenY = tokenFromAddress(config.token_y, xlmPrice);
+  const [tokenX, tokenY] = await Promise.all([
+    resolveToken(config.token_x, xlmPrice),
+    resolveToken(config.token_y, xlmPrice),
+  ]);
 
   return binsRaw
     .map((b) => {

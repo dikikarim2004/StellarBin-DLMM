@@ -1,4 +1,5 @@
 {
+  "ignoreCommand": "exit 0",
   "installCommand": "cd ../.. && pnpm install --frozen-lockfile",
   "buildCommand": "cd ../.. && pnpm --filter @workspace/api-server run build && pnpm --filter @workspace/stellar-dlmm run build && rm -rf artifacts/api-server/public && cp -r artifacts/stellar-dlmm/dist/public artifacts/api-server/public",
   "outputDirectory": "public",

@@ -17,21 +17,26 @@ function requireEnv(key: string): string {
 
 export const STELLAR_NETWORK = (import.meta.env.VITE_STELLAR_NETWORK ?? "testnet") as NetworkId;
 
-export const DLMM_CONTRACT_ID = requireEnv("VITE_DLMM_CONTRACT_ID");
+export const LEGACY_DLMM_CONTRACT_ID = requireEnv("VITE_DLMM_CONTRACT_ID");
+export const DLMM_V2_CONTRACT_ID = import.meta.env.VITE_DLMM_V2_CONTRACT_ID as string | undefined;
+export const DLMM_CONTRACT_ID = DLMM_V2_CONTRACT_ID || LEGACY_DLMM_CONTRACT_ID;
 export const VAULT_CONTRACT_ID = requireEnv("VITE_VAULT_CONTRACT_ID");
 export const MATH_CONTRACT_ID = requireEnv("VITE_MATH_CONTRACT_ID");
 
-/** The seeded "Standard Pool" (XLM/TESTUSD) pool_id inside the DLMM registry contract. */
+/** The default XLM/USDC pool_id in the active DLMM registry. */
 export const DEFAULT_POOL_ID = Number(import.meta.env.VITE_DEFAULT_POOL_ID ?? "0");
 
 export const TOKEN_X = {
   address: requireEnv("VITE_TOKEN_X_ADDRESS"),
-  symbol: import.meta.env.VITE_TOKEN_X_SYMBOL ?? "X",
+  symbol: import.meta.env.VITE_TOKEN_X_SYMBOL ?? "XLM",
 };
 
 export const TOKEN_Y = {
   address: requireEnv("VITE_TOKEN_Y_ADDRESS"),
-  symbol: import.meta.env.VITE_TOKEN_Y_SYMBOL ?? "Y",
+  symbol: import.meta.env.VITE_TOKEN_Y_SYMBOL ?? "USDC",
 };
+
+export const LEGACY_USDC_SAC =
+  "CCTKVL3VAWCBY64NVXSQI7AMESCWXOWGGICYNZUTBSIKYXVEWFIBPD7N";
 
 export const DEMO_POOL_TOKENS = [TOKEN_X, TOKEN_Y];

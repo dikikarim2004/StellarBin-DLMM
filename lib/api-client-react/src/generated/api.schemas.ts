@@ -14,7 +14,7 @@ export interface ErrorResponse {
 }
 
 export interface FaucetRequest {
-  /** Destination Stellar account (G...) that already has a TESTUSD trustline */
+  /** Destination Stellar account (G...) that already has a USDC trustline */
   address: string;
 }
 
@@ -198,6 +198,28 @@ export interface RecentSwap {
   amountOut: string;
   /** Raw stroops (i128), as a string to avoid precision loss */
   feePaid: string;
+}
+
+export type PositionEventAction = typeof PositionEventAction[keyof typeof PositionEventAction];
+
+
+export const PositionEventAction = {
+  add: 'add',
+  close: 'close',
+} as const;
+
+export interface PositionEvent {
+  txHash: string;
+  timestamp: string;
+  address: string;
+  action: PositionEventAction;
+  binId: number;
+  /** Raw stroops (i128), as a string to avoid precision loss */
+  amountX: string;
+  /** Raw stroops (i128), as a string to avoid precision loss */
+  amountY: string;
+  /** Raw LP shares (i128), as a string to avoid precision loss */
+  shares: string;
 }
 
 export type TransactionType = typeof TransactionType[keyof typeof TransactionType];

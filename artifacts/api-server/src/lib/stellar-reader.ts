@@ -35,11 +35,12 @@ const HORIZON_URL = process.env["STELLAR_HORIZON_URL"] ?? "https://horizon-testn
 const NETWORK_PASSPHRASE = Networks.TESTNET;
 
 const DLMM_CONTRACT_ID =
-  process.env["DLMM_CONTRACT_ID"] ?? "CCW5MVYJFJPBJNJY7GN6BHC5BQR47RXVIM2T2X4F3YSQC7MQ7J4GNESH";
+  process.env["DLMM_CONTRACT_ID"] ?? "CCV3NLI6MRZ267E3DBVSLIO2UPNPLEHN7H6MYGQDH36OYN3IOXJBBSWG";
 const NATIVE_XLM_SAC =
   process.env["TOKEN_X_ADDRESS"] ?? "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC";
-const TESTUSD_SAC =
-  process.env["TOKEN_Y_ADDRESS"] ?? "CCA733ILFGI7SESYWNBYTKHUJTJTSU2ORRT6SFNSDZWHYSE4WDLLDUND";
+const USDC_SAC =
+  process.env["TOKEN_Y_ADDRESS"] ?? "CDYZE3XQZA2UYUTYEEVLOKSYDD44CQZ6LYJIKQEDIUYBXNVSNXEQVGEG";
+const LEGACY_USDC_SAC = "CCTKVL3VAWCBY64NVXSQI7AMESCWXOWGGICYNZUTBSIKYXVEWFIBPD7N";
 
 // A funded, publicly-known testnet account used only to satisfy Soroban's
 // requirement for a source account when simulating read-only calls. No funds
@@ -204,11 +205,14 @@ function poolIdArg(poolId: number): xdr.ScVal {
 }
 
 interface RawConfig {
-  admin: string;
+  creator?: string;
   token_x: string;
   token_y: string;
   bin_step_bps: bigint | number;
-  base_fee_bps: bigint | number;
+  base_factor?: bigint | number;
+  base_fee_power_factor?: bigint | number;
+  base_fee_bps?: bigint | number;
+  protocol_share_bps?: bigint | number;
   activation_ts: bigint | number;
 }
 interface RawBin {
@@ -222,6 +226,8 @@ interface RawPosition {
   total_shares: bigint;
   amount_x: bigint;
   amount_y: bigint;
+  claimable_fee_x?: bigint;
+  claimable_fee_y?: bigint;
 }
 
 // ---------------------------------------------------------------------------
@@ -258,11 +264,11 @@ function xlmToken(price: number): Token {
   };
 }
 
-function testUsdToken(): Token {
+function usdcToken(address = USDC_SAC): Token {
   return {
-    symbol: "TESTUSD",
-    name: "Test USD (testnet SAC)",
-    address: TESTUSD_SAC,
+    symbol: "USDC",
+    name: address === LEGACY_USDC_SAC ? "USDC (legacy Testnet)" : "USDC (Soroban Testnet)",
+    address,
     decimals: 7,
     price: 1,
     priceChange24h: 0,
@@ -279,7 +285,7 @@ const tokenMetaCache = new Map<string, { symbol: string; name: string }>();
 
 /**
  * Calls the SEP-41 `symbol()` (and optionally `name()`) function on any
- * Soroban token contract. All SAC contracts implement these, so XLM/TESTUSD
+ * Soroban token contract. All SAC contracts implement these, so XLM/USDC
  * and any custom token created via `stellar contract asset deploy` will work.
  * Results are cached permanently for the lifetime of the server process.
  */
@@ -323,11 +329,11 @@ async function fetchTokenMeta(contractAddress: string): Promise<{ symbol: string
 }
 
 /** Resolves a contract token address to a display Token.
- * For known tokens (XLM, TESTUSD) returns immediately.
+ * For known tokens (XLM, USDC) returns immediately.
  * For custom tokens calls symbol()/name() on-chain (cached). */
 async function resolveToken(address: string, xlmPrice: number): Promise<Token> {
   if (address === NATIVE_XLM_SAC) return xlmToken(xlmPrice);
-  if (address === TESTUSD_SAC) return testUsdToken();
+  if (address === USDC_SAC || address === LEGACY_USDC_SAC) return usdcToken(address);
   const meta = await fetchTokenMeta(address);
   return {
     symbol: meta.symbol,
@@ -344,27 +350,34 @@ async function resolveToken(address: string, xlmPrice: number): Promise<Token> {
 // DLMM registry (our contract) — real on-chain reads, multi-pool
 // ---------------------------------------------------------------------------
 
-const getProtocolFeeBps = memoize(60_000, async (): Promise<number> => {
-  const raw = (await simRead("get_protocol_fee_bps")) as bigint | number;
-  return Number(raw);
-});
-
 const getDlmmPoolIds = memoize(15_000, async (): Promise<number[]> => {
   const raw = (await simRead("list_pools")) as (bigint | number)[];
   return raw.map((id) => Number(id));
 });
 
+const getLegacyProtocolFeeBps = memoize(60_000, async (): Promise<number> => {
+  const raw = (await simRead("get_protocol_fee_bps")) as bigint | number;
+  return Number(raw);
+});
+
 async function readDlmmPool(poolId: number): Promise<PoolRecord> {
-  const [config, activeBinRaw, binsRaw, xlmPrice, protocolFeeBps] = await Promise.all([
+  const [config, activeBinRaw, binsRaw, xlmPrice] = await Promise.all([
     simRead("get_config", [poolIdArg(poolId)]) as Promise<RawConfig>,
     simRead("get_active_bin", [poolIdArg(poolId)]) as Promise<number>,
     simRead("get_bins", [poolIdArg(poolId)]) as Promise<RawBin[]>,
     getXlmPrice(),
-    getProtocolFeeBps(),
   ]);
 
   const binStep = Number(config.bin_step_bps);
-  const baseFeeBps = Number(config.base_fee_bps);
+  const baseFeeRate = config.base_factor !== undefined
+    ? Math.min(
+        Number(config.base_factor) * binStep * 10 * 10 ** Number(config.base_fee_power_factor ?? 0),
+        100_000_000,
+      )
+    : Number(config.base_fee_bps ?? 0) * 100_000;
+  const protocolFeeBps = config.protocol_share_bps !== undefined
+    ? Number(config.protocol_share_bps)
+    : await getLegacyProtocolFeeBps();
   const activeBinId = Number(activeBinRaw);
   const activationTs = Number(config.activation_ts ?? 0);
   const nowSec = Math.floor(Date.now() / 1000);
@@ -396,7 +409,7 @@ async function readDlmmPool(poolId: number): Promise<PoolRecord> {
     binStep,
     activeBinId,
     currentPrice: binPrice(binStep, activeBinId),
-    fee: baseFeeBps / 10_000,
+    fee: baseFeeRate / 1_000_000_000,
     reserveX,
     reserveY,
     volumeAvailable: false,
@@ -489,6 +502,8 @@ export async function getUserPositions(address: string): Promise<PositionRecord[
         const binId = Number(p.bin_id);
         const liquidityX = fromStroops(p.amount_x);
         const liquidityY = fromStroops(p.amount_y);
+        const claimableFeeX = fromStroops(p.claimable_fee_x ?? 0n);
+        const claimableFeeY = fromStroops(p.claimable_fee_y ?? 0n);
         return {
           id: `${address.slice(0, 6)}-pool${poolId}-bin${binId}`,
           poolId: dlmmPoolRecordId(poolId),
@@ -501,10 +516,8 @@ export async function getUserPositions(address: string): Promise<PositionRecord[
           liquidityX,
           liquidityY,
           valueUsd: liquidityX * pool.tokenX.price + liquidityY * pool.tokenY.price,
-          // Trading fees auto-compound into a bin's reserves in this model, so a
-          // position's claimable amount already includes accrued fees — there is
-          // no separately-tracked "unrealized fee" balance to report.
-          unrealizedFees: 0,
+          unrealizedFees:
+            claimableFeeX * pool.tokenX.price + claimableFeeY * pool.tokenY.price,
         };
       });
     }),
@@ -598,6 +611,92 @@ export async function getRecentSwaps(poolId: string): Promise<RecentSwapRecord[]
   const dlmmId = parseDlmmPoolRecordId(poolId);
   if (dlmmId === null) return null;
   return getRecentSwapsForPool(dlmmId);
+}
+
+export interface PositionEventRecord {
+  txHash: string;
+  timestamp: string;
+  address: string;
+  action: "add" | "close";
+  binId: number;
+  amountX: string;
+  amountY: string;
+  shares: string;
+}
+
+const positionEventsCache = new Map<string, ReturnType<typeof memoize<PositionEventRecord[]>>>();
+
+async function readPositionEvents(poolId: number, address: string): Promise<PositionEventRecord[]> {
+  const server = getRpc();
+  const latest = await server.getLatestLedger();
+  const startLedger = Math.max(1, latest.sequence - RECENT_SWAP_LOOKBACK_LEDGERS);
+  const eventTypes = [
+    { name: "ADD_LIQ", action: "add" as const },
+    { name: "REM_LIQ", action: "close" as const },
+  ];
+  const response = await server.getEvents({
+    startLedger,
+    filters: eventTypes.map(({ name }) => ({
+      type: "contract" as const,
+      contractIds: [DLMM_CONTRACT_ID],
+      topics: [[xdr.ScVal.scvSymbol(name).toXDR("base64"), "*", "*"]],
+    })),
+    limit: 200,
+  });
+
+  const result: PositionEventRecord[] = [];
+  for (const event of response.events) {
+    try {
+      const [eventName, eventPoolId, eventBinId] = event.topic.map((topic) => scValToNative(topic)) as [
+        string,
+        bigint | number,
+        bigint | number,
+      ];
+      if (Number(eventPoolId) !== poolId) continue;
+      const eventType = eventTypes.find(({ name }) => name === eventName);
+      if (!eventType) continue;
+
+      const [eventAddress, amountX, amountY, shares] = scValToNative(event.value) as [
+        string,
+        bigint,
+        bigint,
+        bigint,
+      ];
+      if (eventAddress !== address) continue;
+
+      result.push({
+        txHash: event.txHash,
+        timestamp: event.ledgerClosedAt,
+        address: eventAddress,
+        action: eventType.action,
+        binId: Number(eventBinId),
+        amountX: String(amountX),
+        amountY: String(amountY),
+        shares: String(shares),
+      });
+    } catch {
+      // Ignore events with an unexpected schema instead of failing history.
+    }
+  }
+
+  result.sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime());
+  return result.slice(0, 50);
+}
+
+/** Recent add/close events within the testnet RPC retention window. */
+export async function getPoolPositionEvents(
+  poolId: string,
+  address: string
+): Promise<PositionEventRecord[] | null> {
+  const dlmmId = parseDlmmPoolRecordId(poolId);
+  if (dlmmId === null) return null;
+  const key = `${dlmmId}:${address}`;
+  let cached = positionEventsCache.get(key);
+  if (!cached) {
+    cached = memoize(30_000, () => readPositionEvents(dlmmId, address));
+    positionEventsCache.set(key, cached);
+  }
+  return cached();
 }
 
 // ---------------------------------------------------------------------------

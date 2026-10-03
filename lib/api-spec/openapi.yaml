@@ -188,11 +188,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/SwapRoute"
 
-  /faucet/testusd:
+  /faucet/usdc:
     post:
-      operationId: requestTestusdFaucet
+      operationId: requestUsdcFaucet
       tags: [tokens]
-      summary: Send testnet TESTUSD to a wallet (requires an existing trustline)
+      summary: Send testnet USDC to a wallet (requires an existing trustline)
       requestBody:
         required: true
         content:
@@ -279,6 +279,38 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /pools/{poolId}/position-events/{address}:
+    get:
+      operationId: getPoolPositionEvents
+      tags: [pools]
+      summary: Read recent add and close liquidity events for a wallet and pool
+      parameters:
+        - name: poolId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: address
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Recent on-chain liquidity events within RPC retention
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PositionEvent"
+        "404":
+          description: Pool not found or not a DLMM registry pool
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /positions/{address}:
     get:
       operationId: getUserPositions
@@ -322,7 +354,7 @@ components:
       properties:
         address:
           type: string
-          description: Destination Stellar account (G...) that already has a TESTUSD trustline
+          description: Destination Stellar account (G...) that already has a USDC trustline
 
     FaucetResponse:
       type: object
@@ -630,6 +662,31 @@ components:
         feePaid:
           type: string
           description: "Raw stroops (i128), as a string to avoid precision loss"
+
+    PositionEvent:
+      type: object
+      required: [txHash, timestamp, address, action, binId, amountX, amountY, shares]
+      properties:
+        txHash:
+          type: string
+        timestamp:
+          type: string
+        address:
+          type: string
+        action:
+          type: string
+          enum: [add, close]
+        binId:
+          type: integer
+        amountX:
+          type: string
+          description: "Raw stroops (i128), as a string to avoid precision loss"
+        amountY:
+          type: string
+          description: "Raw stroops (i128), as a string to avoid precision loss"
+        shares:
+          type: string
+          description: "Raw LP shares (i128), as a string to avoid precision loss"
 
     Transaction:
       type: object

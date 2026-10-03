@@ -8,7 +8,7 @@ const TX_TYPES = ["swap", "add_liquidity", "remove_liquidity"] as const;
 // Lightweight pool descriptors for the computed Analytics/recent-activity feed.
 // (Full protocol-wide on-chain transaction indexing is out of scope.)
 const DEMO_POOLS = [
-  { id: "pool-xlm-testusd-live", currentPrice: 1.0, activeBinId: 0 },
+  { id: "pool-xlm-usdc-live", currentPrice: 1.0, activeBinId: 0 },
   { id: "pool-xlm-usdc-001", currentPrice: 0.1142, activeBinId: 8388608 },
   { id: "pool-btc-usdc-002", currentPrice: 67420.5, activeBinId: 8392304 },
   { id: "pool-eth-usdc-003", currentPrice: 3512.8, activeBinId: 8391200 },

@@ -22,6 +22,8 @@ export * from './poolDetailCategory';
 export * from './poolStats';
 export * from './poolStatsPoint';
 export * from './position';
+export * from './positionEvent';
+export * from './positionEventAction';
 export * from './positionStrategy';
 export * from './protocolSummary';
 export * from './recentSwap';

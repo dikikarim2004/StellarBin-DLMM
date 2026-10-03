@@ -31,6 +31,7 @@ import type {
   PoolDetail,
   PoolStats,
   Position,
+  PositionEvent,
   ProtocolSummary,
   RecentSwap,
   SwapQuote,
@@ -754,20 +755,20 @@ export const useGetSwapRoute = <TError = ErrorType<unknown>,
       return useMutation(getGetSwapRouteMutationOptions(options));
     }
 
-export const getRequestTestusdFaucetUrl = () => {
+export const getRequestUsdcFaucetUrl = () => {
 
 
 
 
-  return `/api/faucet/testusd`
+  return `/api/faucet/usdc`
 }
 
 /**
- * @summary Send testnet TESTUSD to a wallet (requires an existing trustline)
+ * @summary Send testnet USDC to a wallet (requires an existing trustline)
  */
-export const requestTestusdFaucet = async (faucetRequest: FaucetRequest, options?: RequestInit): Promise<FaucetResponse> => {
+export const requestUsdcFaucet = async (faucetRequest: FaucetRequest, options?: RequestInit): Promise<FaucetResponse> => {
 
-  return customFetch<FaucetResponse>(getRequestTestusdFaucetUrl(),
+  return customFetch<FaucetResponse>(getRequestUsdcFaucetUrl(),
   {
     ...options,
     method: 'POST',
@@ -779,11 +780,11 @@ export const requestTestusdFaucet = async (faucetRequest: FaucetRequest, options
 
 
 
-export const getRequestTestusdFaucetMutationOptions = <TError = ErrorType<ErrorResponse>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof requestTestusdFaucet>>, TError,{data: BodyType<FaucetRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
-): UseMutationOptions<Awaited<ReturnType<typeof requestTestusdFaucet>>, TError,{data: BodyType<FaucetRequest>}, TContext> => {
+export const getRequestUsdcFaucetMutationOptions = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof requestUsdcFaucet>>, TError,{data: BodyType<FaucetRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof requestUsdcFaucet>>, TError,{data: BodyType<FaucetRequest>}, TContext> => {
 
-const mutationKey = ['requestTestusdFaucet'];
+const mutationKey = ['requestUsdcFaucet'];
 const {mutation: mutationOptions, request: requestOptions} = options ?
       options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
       options
@@ -793,10 +794,10 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
 
 
 
-      const mutationFn: MutationFunction<Awaited<ReturnType<typeof requestTestusdFaucet>>, {data: BodyType<FaucetRequest>}> = (props) => {
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof requestUsdcFaucet>>, {data: BodyType<FaucetRequest>}> = (props) => {
           const {data} = props ?? {};
 
-          return  requestTestusdFaucet(data,requestOptions)
+          return  requestUsdcFaucet(data,requestOptions)
         }
 
 
@@ -806,22 +807,22 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
 
   return  { mutationFn, ...mutationOptions }}
 
-    export type RequestTestusdFaucetMutationResult = NonNullable<Awaited<ReturnType<typeof requestTestusdFaucet>>>
-    export type RequestTestusdFaucetMutationBody = BodyType<FaucetRequest>
-    export type RequestTestusdFaucetMutationError = ErrorType<ErrorResponse>
+    export type RequestUsdcFaucetMutationResult = NonNullable<Awaited<ReturnType<typeof requestUsdcFaucet>>>
+    export type RequestUsdcFaucetMutationBody = BodyType<FaucetRequest>
+    export type RequestUsdcFaucetMutationError = ErrorType<ErrorResponse>
 
     /**
- * @summary Send testnet TESTUSD to a wallet (requires an existing trustline)
+ * @summary Send testnet USDC to a wallet (requires an existing trustline)
  */
-export const useRequestTestusdFaucet = <TError = ErrorType<ErrorResponse>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof requestTestusdFaucet>>, TError,{data: BodyType<FaucetRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+export const useRequestUsdcFaucet = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof requestUsdcFaucet>>, TError,{data: BodyType<FaucetRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
  ): UseMutationResult<
-        Awaited<ReturnType<typeof requestTestusdFaucet>>,
+        Awaited<ReturnType<typeof requestUsdcFaucet>>,
         TError,
         {data: BodyType<FaucetRequest>},
         TContext
       > => {
-      return useMutation(getRequestTestusdFaucetMutationOptions(options));
+      return useMutation(getRequestUsdcFaucetMutationOptions(options));
     }
 
 export const getListTransactionsUrl = (params?: ListTransactionsParams,) => {
@@ -973,6 +974,88 @@ export function useGetPoolRecentSwaps<TData = Awaited<ReturnType<typeof getPoolR
  ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
 
   const queryOptions = getGetPoolRecentSwapsQueryOptions(poolId,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getGetPoolPositionEventsUrl = (poolId: string,
+    address: string,) => {
+
+
+
+
+  return `/api/pools/${poolId}/position-events/${address}`
+}
+
+/**
+ * @summary Read recent add and close liquidity events for a wallet and pool
+ */
+export const getPoolPositionEvents = async (poolId: string,
+    address: string, options?: RequestInit): Promise<PositionEvent[]> => {
+
+  return customFetch<PositionEvent[]>(getGetPoolPositionEventsUrl(poolId,address),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetPoolPositionEventsQueryKey = (poolId: string,
+    address: string,) => {
+    return [
+    `/api/pools/${poolId}/position-events/${address}`
+    ] as const;
+    }
+
+
+export const getGetPoolPositionEventsQueryOptions = <TData = Awaited<ReturnType<typeof getPoolPositionEvents>>, TError = ErrorType<ErrorResponse>>(poolId: string,
+    address: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getPoolPositionEvents>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetPoolPositionEventsQueryKey(poolId,address);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getPoolPositionEvents>>> = ({ signal }) => getPoolPositionEvents(poolId,address, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: poolId !== null && poolId !== undefined && address !== null && address !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getPoolPositionEvents>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetPoolPositionEventsQueryResult = NonNullable<Awaited<ReturnType<typeof getPoolPositionEvents>>>
+export type GetPoolPositionEventsQueryError = ErrorType<ErrorResponse>
+
+
+/**
+ * @summary Read recent add and close liquidity events for a wallet and pool
+ */
+
+export function useGetPoolPositionEvents<TData = Awaited<ReturnType<typeof getPoolPositionEvents>>, TError = ErrorType<ErrorResponse>>(
+ poolId: string,
+    address: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getPoolPositionEvents>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetPoolPositionEventsQueryOptions(poolId,address,options)
 
   const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
 

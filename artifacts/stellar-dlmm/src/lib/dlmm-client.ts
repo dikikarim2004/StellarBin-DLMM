@@ -17,6 +17,7 @@ import {
   Contract,
   TransactionBuilder,
   BASE_FEE,
+  nativeToScVal,
   rpc,
   scValToNative,
 } from "@stellar/stellar-sdk";
@@ -30,8 +31,15 @@ import {
   NETWORK_CONFIG,
   decodeSwapResult,
   type SwapResultDecoded,
+  decodeSwapExactOutResult,
+  type SwapExactOutResultDecoded,
 } from "./stellar";
-import { DLMM_CONTRACT_ID, STELLAR_NETWORK, DEFAULT_POOL_ID } from "./contracts";
+import {
+  DLMM_CONTRACT_ID,
+  DLMM_V2_CONTRACT_ID,
+  STELLAR_NETWORK,
+  DEFAULT_POOL_ID,
+} from "./contracts";
 
 // A funded, publicly-known testnet account used only to satisfy Soroban's
 // requirement for a transaction source account when simulating read-only
@@ -41,7 +49,56 @@ const QUOTE_SOURCE_ACCOUNT =
   import.meta.env.VITE_QUOTE_SOURCE_ACCOUNT ??
   "GD3HFFCVSBBQSHHXJGJLSRCAFTGRT5XFHSGCC2U7BDKBFPQWZWITDWQ2";
 
+export interface SorobanTokenMetadata {
+  symbol: string;
+  name: string;
+}
+
+const tokenMetadataCache = new Map<string, Promise<SorobanTokenMetadata>>();
+
+export function getSorobanTokenMetadata(address: string): Promise<SorobanTokenMetadata> {
+  const contractId = address.trim();
+  if (!/^C[A-Z2-7]{55}$/.test(contractId)) {
+    return Promise.reject(
+      new Error("Enter a Soroban token contract address (C...). G... addresses are accounts or classic issuers.")
+    );
+  }
+
+  const cached = tokenMetadataCache.get(contractId);
+  if (cached) return cached;
+
+  const lookup = (async () => {
+    const server = createRpcServer(STELLAR_NETWORK);
+    const account = await server.getAccount(QUOTE_SOURCE_ACCOUNT);
+    const contract = new Contract(contractId);
+
+    async function callString(method: "symbol" | "name"): Promise<string | null> {
+      const tx = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: NETWORK_CONFIG[STELLAR_NETWORK].networkPassphrase,
+      })
+        .addOperation(contract.call(method))
+        .setTimeout(30)
+        .build();
+      const simulation = await server.simulateTransaction(tx);
+      if (rpc.Api.isSimulationError(simulation) || !simulation.result) return null;
+      const value = scValToNative(simulation.result.retval);
+      return typeof value === "string" && value.length > 0 ? value : null;
+    }
+
+    const symbol = await callString("symbol");
+    if (!symbol) throw new Error("Address is not a SEP-41 token contract or does not expose symbol().");
+    const name = await callString("name");
+    return { symbol, name: name ?? symbol };
+  })();
+
+  tokenMetadataCache.set(contractId, lookup);
+  lookup.catch(() => tokenMetadataCache.delete(contractId));
+  return lookup;
+}
+
 export interface SwapQuote {
+  amountIn: bigint;
   amountOut: bigint;
   feePaid: bigint;
   binsCrossed: number;
@@ -85,7 +142,43 @@ export async function getOnChainSwapQuote(
   }
 
   const decoded = decodeSwapResult(sim.result.retval);
-  return decoded;
+  return { ...decoded, amountIn };
+}
+
+export async function getOnChainExactOutQuote(
+  xToY: boolean,
+  amountOut: bigint,
+  poolId: number = DEFAULT_POOL_ID
+): Promise<SwapExactOutResultDecoded> {
+  if (!DLMM_V2_CONTRACT_ID) {
+    throw new Error("Exact-output swaps require V2. Set VITE_DLMM_V2_CONTRACT_ID after deployment.");
+  }
+  const rpcServer = createRpcServer(STELLAR_NETWORK);
+  const account = await rpcServer.getAccount(QUOTE_SOURCE_ACCOUNT);
+  const contract = new Contract(DLMM_V2_CONTRACT_ID);
+  const tx = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: NETWORK_CONFIG[STELLAR_NETWORK].networkPassphrase,
+  })
+    .addOperation(
+      contract.call(
+        "simulate_swap_exact_out",
+        u64ToScVal(poolId),
+        boolToScVal(xToY),
+        i128ToScVal(amountOut)
+      )
+    )
+    .setTimeout(30)
+    .build();
+
+  const sim = await rpcServer.simulateTransaction(tx);
+  if (rpc.Api.isSimulationError(sim)) {
+    throw new Error(`Exact-output quote simulation failed: ${sim.error}`);
+  }
+  if (!sim.result) {
+    throw new Error("Exact-output quote returned no result");
+  }
+  return decodeSwapExactOutResult(sim.result.retval);
 }
 
 /**
@@ -125,6 +218,38 @@ export async function buildSwapTransaction(
   return prepared;
 }
 
+export async function buildExactOutSwapTransaction(
+  callerAddress: string,
+  xToY: boolean,
+  amountOut: bigint,
+  maxAmountIn: bigint,
+  poolId: number = DEFAULT_POOL_ID
+) {
+  if (!DLMM_V2_CONTRACT_ID) {
+    throw new Error("Exact-output swaps require V2. Set VITE_DLMM_V2_CONTRACT_ID after deployment.");
+  }
+  const rpcServer = createRpcServer(STELLAR_NETWORK);
+  const account = await rpcServer.getAccount(callerAddress);
+  const contract = new Contract(DLMM_V2_CONTRACT_ID);
+  const tx = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: NETWORK_CONFIG[STELLAR_NETWORK].networkPassphrase,
+  })
+    .addOperation(
+      contract.call(
+        "swap_exact_out_bin",
+        u64ToScVal(poolId),
+        addressToScVal(callerAddress),
+        boolToScVal(xToY),
+        i128ToScVal(amountOut),
+        i128ToScVal(maxAmountIn)
+      )
+    )
+    .setTimeout(60)
+    .build();
+  return rpcServer.prepareTransaction(tx);
+}
+
 /**
  * Submits a wallet-signed transaction XDR and polls until it lands
  * (SUCCESS/FAILED), returning the decoded SwapResult on success.
@@ -159,6 +284,35 @@ export async function submitSignedSwap(signedXdr: string): Promise<SwapResultDec
   }
 
   return decodeSwapResult(getResult.returnValue);
+}
+
+export async function submitSignedExactOutSwap(
+  signedXdr: string
+): Promise<SwapExactOutResultDecoded> {
+  const rpcServer = createRpcServer(STELLAR_NETWORK);
+  const networkPassphrase = NETWORK_CONFIG[STELLAR_NETWORK].networkPassphrase;
+  const tx = TransactionBuilder.fromXDR(signedXdr, networkPassphrase);
+  const sendResult = await rpcServer.sendTransaction(tx);
+  if (sendResult.status === "ERROR") {
+    throw new Error(`Transaction rejected: ${JSON.stringify(sendResult.errorResult)}`);
+  }
+  const hash = sendResult.hash;
+  let getResult = await rpcServer.getTransaction(hash);
+  const start = Date.now();
+  while (getResult.status === rpc.Api.GetTransactionStatus.NOT_FOUND) {
+    if (Date.now() - start > 30_000) {
+      throw new Error(`Timed out waiting for transaction ${hash} to confirm`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    getResult = await rpcServer.getTransaction(hash);
+  }
+  if (getResult.status !== rpc.Api.GetTransactionStatus.SUCCESS) {
+    throw new Error(`Transaction failed: ${JSON.stringify(getResult)}`);
+  }
+  if (!getResult.returnValue) {
+    throw new Error("Transaction succeeded but returned no value");
+  }
+  return decodeSwapExactOutResult(getResult.returnValue);
 }
 
 export function toAddressScVal(address: string) {
@@ -229,12 +383,49 @@ export async function buildRemoveLiquidityTransaction(
   return rpcServer.prepareTransaction(tx);
 }
 
+export async function buildClaimFeeTransaction(
+  callerAddress: string,
+  binId: number,
+  poolId: number = DEFAULT_POOL_ID
+) {
+  if (!DLMM_V2_CONTRACT_ID) {
+    throw new Error("LP fee claims require V2. Set VITE_DLMM_V2_CONTRACT_ID after deployment.");
+  }
+  const rpcServer = createRpcServer(STELLAR_NETWORK);
+  const account = await rpcServer.getAccount(callerAddress);
+  const contract = new Contract(DLMM_V2_CONTRACT_ID);
+  const tx = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: NETWORK_CONFIG[STELLAR_NETWORK].networkPassphrase,
+  })
+    .addOperation(
+      contract.call(
+        "claim_fee",
+        u64ToScVal(poolId),
+        addressToScVal(callerAddress),
+        i32ToScVal(binId)
+      )
+    )
+    .setTimeout(60)
+    .build();
+  return rpcServer.prepareTransaction(tx);
+}
+
 export interface CreatePoolParams {
   creatorAddress: string;
   tokenX: string;
   tokenY: string;
   binStepBps: number;
-  baseFeeBps: number;
+  baseFactor: bigint;
+  baseFeePowerFactor: number;
+  filterPeriod: number;
+  decayPeriod: number;
+  reductionFactor: number;
+  variableFeeControl: bigint;
+  maxVolatilityAccumulator: bigint;
+  protocolShareBps: number;
+  functionType: number;
+  collectFeeMode: number;
   activeBinId: number;
   /** Unix seconds. 0 = Standard Pool (active immediately). Future = Launch Pool (anti-snipe). */
   activationTs: number;
@@ -247,18 +438,30 @@ export interface CreatePoolParams {
  * The new pool_id is returned by `submitSignedTransaction`'s decoded result.
  */
 export async function buildCreatePoolTransaction(params: CreatePoolParams) {
+  if (!DLMM_V2_CONTRACT_ID) {
+    throw new Error("Pool creation with PoolFeeConfig requires V2. Set VITE_DLMM_V2_CONTRACT_ID after deployment.");
+  }
   const {
     creatorAddress,
     tokenX,
     tokenY,
     binStepBps,
-    baseFeeBps,
+    baseFactor,
+    baseFeePowerFactor,
+    filterPeriod,
+    decayPeriod,
+    reductionFactor,
+    variableFeeControl,
+    maxVolatilityAccumulator,
+    protocolShareBps,
+    functionType,
+    collectFeeMode,
     activeBinId,
     activationTs,
   } = params;
   const rpcServer = createRpcServer(STELLAR_NETWORK);
   const account = await rpcServer.getAccount(creatorAddress);
-  const contract = new Contract(DLMM_CONTRACT_ID);
+  const contract = new Contract(DLMM_V2_CONTRACT_ID);
 
   const tx = new TransactionBuilder(account, {
     fee: BASE_FEE,
@@ -271,7 +474,34 @@ export async function buildCreatePoolTransaction(params: CreatePoolParams) {
         addressToScVal(tokenX),
         addressToScVal(tokenY),
         i128ToScVal(BigInt(binStepBps)),
-        i128ToScVal(BigInt(baseFeeBps)),
+        nativeToScVal(
+          {
+            base_factor: baseFactor,
+            base_fee_power_factor: BigInt(baseFeePowerFactor),
+            filter_period: BigInt(filterPeriod),
+            decay_period: BigInt(decayPeriod),
+            reduction_factor: BigInt(reductionFactor),
+            variable_fee_control: variableFeeControl,
+            max_volatility_accumulator: maxVolatilityAccumulator,
+            protocol_share_bps: BigInt(protocolShareBps),
+            function_type: BigInt(functionType),
+            collect_fee_mode: BigInt(collectFeeMode),
+          },
+          {
+            type: {
+              base_factor: ["symbol", "i128"],
+              base_fee_power_factor: ["symbol", "i128"],
+              filter_period: ["symbol", "u64"],
+              decay_period: ["symbol", "u64"],
+              reduction_factor: ["symbol", "i128"],
+              variable_fee_control: ["symbol", "i128"],
+              max_volatility_accumulator: ["symbol", "i128"],
+              protocol_share_bps: ["symbol", "i128"],
+              function_type: ["symbol", "i128"],
+              collect_fee_mode: ["symbol", "i128"],
+            },
+          }
+        ),
         i32ToScVal(activeBinId),
         u64ToScVal(activationTs)
       )

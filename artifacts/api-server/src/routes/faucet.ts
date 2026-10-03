@@ -8,23 +8,23 @@ import {
   TransactionBuilder,
   BASE_FEE,
 } from "@stellar/stellar-sdk";
-import { RequestTestusdFaucetBody, RequestTestusdFaucetResponse } from "@workspace/api-zod";
+import { RequestUsdcFaucetBody, RequestUsdcFaucetResponse } from "@workspace/api-zod";
 
 const router = Router();
 
 const HORIZON_URL = "https://horizon-testnet.stellar.org";
 const NETWORK_PASSPHRASE = Networks.TESTNET;
 
-const TESTUSD_ISSUER =
-  process.env["TESTUSD_ISSUER"] ?? "GD3HFFCVSBBQSHHXJGJLSRCAFTGRT5XFHSGCC2U7BDKBFPQWZWITDWQ2";
-const TESTUSD_ASSET = new Asset("TESTUSD", TESTUSD_ISSUER);
+const USDC_ISSUER =
+  process.env["USDC_ISSUER"] ?? "GABZWK2YLPOGBEOZT6VOCID6ROSSZGPSLAEPCTWIBGAJDHISO6DFKYYZ";
+const USDC_ASSET = new Asset("USDC", USDC_ISSUER);
 const FAUCET_AMOUNT = "500";
 
-// POST /faucet/testusd — sends 500 TESTUSD from the holder account to a wallet
+// POST /faucet/usdc — sends 500 USDC from the holder account to a wallet
 // that already has a trustline to the asset. This is a testnet-only convenience
 // route; it does not touch the DLMM contract.
-router.post("/faucet/testusd", async (req, res) => {
-  const body = RequestTestusdFaucetBody.safeParse(req.body);
+router.post("/faucet/usdc", async (req, res) => {
+  const body = RequestUsdcFaucetBody.safeParse(req.body);
   if (!body.success) {
     return res.status(400).json({ error: "Invalid request body" });
   }
@@ -51,13 +51,13 @@ router.post("/faucet/testusd", async (req, res) => {
       (b) =>
         (b.asset_type === "credit_alphanum4" || b.asset_type === "credit_alphanum12") &&
         "asset_code" in b &&
-        b.asset_code === "TESTUSD" &&
+        b.asset_code === "USDC" &&
         "asset_issuer" in b &&
-        b.asset_issuer === TESTUSD_ISSUER
+        b.asset_issuer === USDC_ISSUER
     );
     if (!hasTrustline) {
       return res.status(400).json({
-        error: "This wallet has no TESTUSD trustline yet. Establish a trustline first.",
+        error: "This wallet has no USDC trustline yet. Establish a trustline first.",
       });
     }
   } catch (err) {
@@ -76,7 +76,7 @@ router.post("/faucet/testusd", async (req, res) => {
       .addOperation(
         Operation.payment({
           destination: address,
-          asset: TESTUSD_ASSET,
+          asset: USDC_ASSET,
           amount: FAUCET_AMOUNT,
         })
       )
@@ -86,7 +86,7 @@ router.post("/faucet/testusd", async (req, res) => {
     tx.sign(holderKeypair);
     const result = await server.submitTransaction(tx);
 
-    const parsed = RequestTestusdFaucetResponse.safeParse({
+    const parsed = RequestUsdcFaucetResponse.safeParse({
       txHash: result.hash,
       amount: FAUCET_AMOUNT,
     });

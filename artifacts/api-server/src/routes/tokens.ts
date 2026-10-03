@@ -16,7 +16,7 @@ export const TOKENS = [
   {
     symbol: "USDC",
     name: "USD Coin",
-    address: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+    address: "CDYZE3XQZA2UYUTYEEVLOKSYDD44CQZ6LYJIKQEDIUYBXNVSNXEQVGEG",
     decimals: 7,
     price: 1.0001,
     priceChange24h: 0.01,
@@ -57,15 +57,6 @@ export const TOKENS = [
     price: 0.00082,
     priceChange24h: 5.67,
     logoUrl: "https://assets.coingecko.com/coins/images/17217/small/aquarius.png",
-  },
-  {
-    symbol: "TESTUSD",
-    name: "Test USD (live testnet SAC)",
-    address: "CCA733ILFGI7SESYWNBYTKHUJTJTSU2ORRT6SFNSDZWHYSE4WDLLDUND",
-    decimals: 7,
-    price: 1.0,
-    priceChange24h: 0,
-    logoUrl: "https://assets.coingecko.com/coins/images/6319/small/USD_Coin_icon.png",
   },
 ];
 

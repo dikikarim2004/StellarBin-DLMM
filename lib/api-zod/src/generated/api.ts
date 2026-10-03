@@ -264,13 +264,13 @@ export const GetSwapRouteResponse = zod.object({
 
 
 /**
- * @summary Send testnet TESTUSD to a wallet (requires an existing trustline)
+ * @summary Send testnet USDC to a wallet (requires an existing trustline)
  */
-export const RequestTestusdFaucetBody = zod.object({
-  "address": zod.string().describe('Destination Stellar account (G...) that already has a TESTUSD trustline')
+export const RequestUsdcFaucetBody = zod.object({
+  "address": zod.string().describe('Destination Stellar account (G...) that already has a USDC trustline')
 })
 
-export const RequestTestusdFaucetResponse = zod.object({
+export const RequestUsdcFaucetResponse = zod.object({
   "txHash": zod.string(),
   "amount": zod.string()
 })
@@ -318,6 +318,27 @@ export const GetPoolRecentSwapsResponseItem = zod.object({
   "feePaid": zod.string().describe('Raw stroops (i128), as a string to avoid precision loss')
 })
 export const GetPoolRecentSwapsResponse = zod.array(GetPoolRecentSwapsResponseItem)
+
+
+/**
+ * @summary Read recent add and close liquidity events for a wallet and pool
+ */
+export const GetPoolPositionEventsParams = zod.object({
+  "poolId": zod.coerce.string(),
+  "address": zod.coerce.string()
+})
+
+export const GetPoolPositionEventsResponseItem = zod.object({
+  "txHash": zod.string(),
+  "timestamp": zod.string(),
+  "address": zod.string(),
+  "action": zod.enum(['add', 'close']),
+  "binId": zod.number(),
+  "amountX": zod.string().describe('Raw stroops (i128), as a string to avoid precision loss'),
+  "amountY": zod.string().describe('Raw stroops (i128), as a string to avoid precision loss'),
+  "shares": zod.string().describe('Raw LP shares (i128), as a string to avoid precision loss')
+})
+export const GetPoolPositionEventsResponse = zod.array(GetPoolPositionEventsResponseItem)
 
 
 /**

@@ -15,7 +15,7 @@
 //! - A set of *bins*, each with a constant price `P = 1.0001^bin_id`.
 //! - Each bin holds reserves of tokenX and tokenY.
 //! - Swaps traverse bins sequentially, filling each at its fixed price.
-//! - Fees are dynamic: higher during volatile periods (see math::dynamic_fee).
+//! - Fees combine per-pool base parameters with a bin-movement volatility accumulator.
 //!
 //! # Standard Pool vs. Launch Pool
 //!
@@ -46,14 +46,13 @@
 //! # Storage layout (Soroban persistent storage, keyed by DataKey)
 //!
 //! Admin                    | Address (contract-wide admin)
-//! ProtocolFeeBps           | i128 (contract-wide, default 2000 = 20%)
 //! PoolCounter              | u64 (next pool_id to assign)
 //! AllPools                 | Vec<u64> (every pool_id ever created)
 //! PoolConfig(pool_id)      | PoolConfig struct
 //! Active(pool_id)          | i32 (active bin ID)
-//! LastTs(pool_id)          | u64 (Unix timestamp of last trade)
-//! Bin(pool_id,i32)         | BinReserves struct
-//! AllBins(pool_id)         | Vec<i32> (every bin that has ever held liquidity)
+//! FeeState(pool_id)        | FeeState (volatility reference and accumulator)
+//! BinArray(pool_id,i32)    | 70 consecutive BinReserves entries
+//! ArrayIndices(pool_id)    | initialized bin-array indexes
 //! Share(pool_id,Addr,i32)  | i128 (an LP's shares in a bin)
 //! TotalShare(pool_id,i32)  | i128 (total shares issued for a bin)
 //! UserBins(pool_id,Addr)   | Vec<i32> (bins an LP has ever deposited into)
@@ -73,7 +72,11 @@
 use soroban_sdk::{
     contract, contractimpl, contracttype, symbol_short, token, Address, Env, Vec,
 };
-use stellar_dlmm_math::{bin_price, compute_x_from_y, compute_y_from_x, dynamic_fee};
+use stellar_dlmm_math::{
+    bin_price, compute_y_from_x, dlmm_fee_rate, fee_growth_per_share,
+    pending_position_fee, quote_exact_in_bin, quote_exact_out_bin, update_volatility,
+    VolatilityParams, VolatilityState as MathVolatilityState,
+};
 
 // ---------------------------------------------------------------------------
 // Data types
@@ -84,17 +87,20 @@ use stellar_dlmm_math::{bin_price, compute_x_from_y, compute_y_from_x, dynamic_f
 #[derive(Clone)]
 pub enum DataKey {
     Admin,
-    ProtocolFeeBps,
     PoolCounter,
     AllPools,
     PoolConfig(u64),
+    FeeState(u64),
     Active(u64),
-    LastTs(u64),
-    Bin(u64, i32),
-    AllBins(u64),
+    BinArray(u64, i32),
+    ArrayIndices(u64),
+    BinArrayBitmapPage(u64, i32),
+    BinArrayBitmapPages(u64),
     Share(u64, Address, i32),
     TotalShare(u64, i32),
     UserBins(u64, Address),
+    LpFeeBalance(u64, i32),
+    PositionFeeState(u64, Address, i32),
     ProtoFeeX(u64),
     ProtoFeeY(u64),
 }
@@ -110,13 +116,45 @@ pub struct PoolConfig {
     pub token_y: Address,
     /// Bin step in basis points (e.g. 25 = 0.25% price gap between bins).
     pub bin_step_bps: i128,
-    /// Base swap fee in basis points before dynamic adjustment.
-    pub base_fee_bps: i128,
+    pub base_factor: i128,
+    pub base_fee_power_factor: i128,
+    pub filter_period: u64,
+    pub decay_period: u64,
+    pub reduction_factor: i128,
+    pub variable_fee_control: i128,
+    pub max_volatility_accumulator: i128,
+    pub protocol_share_bps: i128,
+    pub function_type: i128,
+    pub collect_fee_mode: i128,
     /// Address that created (and permissionlessly registered) the pool.
     pub creator: Address,
     /// Unix timestamp after which swaps are allowed. 0 = active immediately
     /// ("Standard Pool"). A future timestamp marks a "Launch Pool".
     pub activation_ts: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct PoolFeeConfig {
+    pub base_factor: i128,
+    pub base_fee_power_factor: i128,
+    pub filter_period: u64,
+    pub decay_period: u64,
+    pub reduction_factor: i128,
+    pub variable_fee_control: i128,
+    pub max_volatility_accumulator: i128,
+    pub protocol_share_bps: i128,
+    pub function_type: i128,
+    pub collect_fee_mode: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Default)]
+pub struct FeeState {
+    pub volatility_reference: i128,
+    pub volatility_accumulator: i128,
+    pub index_reference: i128,
+    pub last_update_timestamp: u64,
 }
 
 /// Per-bin reserves stored in contract persistent storage.
@@ -127,6 +165,32 @@ pub struct BinReserves {
     pub reserve_x: i128,
     /// Amount of token Y in this bin (SCALAR-scaled integer).
     pub reserve_y: i128,
+    pub fee_growth_x_per_share: i128,
+    pub fee_growth_y_per_share: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Default)]
+pub struct LpFeeBalance {
+    pub amount_x: i128,
+    pub amount_y: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Default)]
+pub struct PositionFeeState {
+    pub fee_growth_x_checkpoint: i128,
+    pub fee_growth_y_checkpoint: i128,
+    pub pending_x: i128,
+    pub pending_y: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct BinArray {
+    pub index: i32,
+    pub bins: Vec<BinReserves>,
+    pub liquid_bin_count: u32,
 }
 
 /// A bin plus its ID — returned by `get_bins` for the distribution chart.
@@ -151,6 +215,8 @@ pub struct PositionInfo {
     pub amount_x: i128,
     /// Token Y currently claimable by the user (their pro-rata slice).
     pub amount_y: i128,
+    pub claimable_fee_x: i128,
+    pub claimable_fee_y: i128,
 }
 
 /// Return value for swap operations.
@@ -169,6 +235,25 @@ pub struct SwapResult {
     pub final_bin: i32,
 }
 
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct SwapExactOutResult {
+    pub amount_in: i128,
+    pub amount_out: i128,
+    pub fee_paid: i128,
+    pub protocol_fee: i128,
+    pub bins_crossed: u32,
+    pub final_bin: i32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+struct BinSwapUpdate {
+    bin_id: i32,
+    reserves: BinReserves,
+    lp_fee_balance: LpFeeBalance,
+}
+
 // ---------------------------------------------------------------------------
 // Storage helpers
 // ---------------------------------------------------------------------------
@@ -178,13 +263,6 @@ fn get_admin(env: &Env) -> Address {
         .persistent()
         .get(&DataKey::Admin)
         .expect("contract not initialized")
-}
-
-fn get_protocol_fee_bps(env: &Env) -> i128 {
-    env.storage()
-        .persistent()
-        .get(&DataKey::ProtocolFeeBps)
-        .unwrap_or(2000i128)
 }
 
 fn get_pool_config(env: &Env, pool_id: u64) -> PoolConfig {
@@ -201,40 +279,235 @@ fn get_active_bin(env: &Env, pool_id: u64) -> i32 {
         .unwrap_or(0i32)
 }
 
-fn get_bin(env: &Env, pool_id: u64, bin_id: i32) -> BinReserves {
-    env.storage()
-        .persistent()
-        .get(&DataKey::Bin(pool_id, bin_id))
-        .unwrap_or_default()
+const BINS_PER_ARRAY: u32 = 70;
+
+fn bin_array_index(bin_id: i32) -> i32 {
+    bin_id.div_euclid(BINS_PER_ARRAY as i32)
 }
 
-fn set_bin(env: &Env, pool_id: u64, bin_id: i32, reserves: &BinReserves) {
-    env.storage()
-        .persistent()
-        .set(&DataKey::Bin(pool_id, bin_id), reserves);
+fn bin_array_slot(bin_id: i32) -> u32 {
+    bin_id.rem_euclid(BINS_PER_ARRAY as i32) as u32
 }
 
-fn get_last_trade_ts(env: &Env, pool_id: u64) -> u64 {
-    env.storage()
-        .persistent()
-        .get(&DataKey::LastTs(pool_id))
-        .unwrap_or(0u64)
+fn bitmap_page(index: i32) -> i32 {
+    index.div_euclid(64)
 }
 
-fn get_all_bins(env: &Env, pool_id: u64) -> Vec<i32> {
+fn bitmap_bit(index: i32) -> u32 {
+    index.rem_euclid(64) as u32
+}
+
+fn get_array_indices(env: &Env, pool_id: u64) -> Vec<i32> {
     env.storage()
         .persistent()
-        .get(&DataKey::AllBins(pool_id))
+        .get(&DataKey::ArrayIndices(pool_id))
         .unwrap_or_else(|| Vec::new(env))
 }
 
-/// Record `bin_id` in `pool_id`'s bin registry if not already present.
-fn track_bin(env: &Env, pool_id: u64, bin_id: i32) {
-    let mut all = get_all_bins(env, pool_id);
-    if !all.iter().any(|b| b == bin_id) {
-        all.push_back(bin_id);
-        env.storage().persistent().set(&DataKey::AllBins(pool_id), &all);
+fn track_array(env: &Env, pool_id: u64, index: i32) {
+    let mut indices = get_array_indices(env, pool_id);
+    if !indices.iter().any(|item| item == index) {
+        indices.push_back(index);
+        env.storage()
+            .persistent()
+            .set(&DataKey::ArrayIndices(pool_id), &indices);
     }
+}
+
+fn get_bitmap_pages(env: &Env, pool_id: u64) -> Vec<i32> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::BinArrayBitmapPages(pool_id))
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+fn update_bin_array_bitmap(env: &Env, pool_id: u64, index: i32, has_liquidity: bool) {
+    let page = bitmap_page(index);
+    let bit = bitmap_bit(index);
+    let key = DataKey::BinArrayBitmapPage(pool_id, page);
+    let mut bitmap: u64 = env.storage().persistent().get(&key).unwrap_or(0);
+    if has_liquidity {
+        bitmap |= 1u64 << bit;
+    } else {
+        bitmap &= !(1u64 << bit);
+    }
+    env.storage().persistent().set(&key, &bitmap);
+
+    let mut pages = get_bitmap_pages(env, pool_id);
+    if bitmap != 0 && !pages.iter().any(|item| item == page) {
+        pages.push_back(page);
+        env.storage()
+            .persistent()
+            .set(&DataKey::BinArrayBitmapPages(pool_id), &pages);
+    }
+}
+
+fn next_bin_array_with_liquidity(
+    env: &Env,
+    pool_id: u64,
+    current_index: i32,
+    step: i32,
+) -> Option<i32> {
+    let mut nearest: Option<i32> = None;
+    for page in get_bitmap_pages(env, pool_id).iter() {
+        let bitmap: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::BinArrayBitmapPage(pool_id, page))
+            .unwrap_or(0);
+        let mut remaining = bitmap;
+        while remaining != 0 {
+            let bit = remaining.trailing_zeros() as i32;
+            let candidate = page.checked_mul(64)?.checked_add(bit)?;
+            let is_ahead = if step > 0 {
+                candidate > current_index
+            } else {
+                candidate < current_index
+            };
+            let is_nearer = match nearest {
+                None => true,
+                Some(previous) if step > 0 => candidate < previous,
+                Some(previous) => candidate > previous,
+            };
+            if is_ahead && is_nearer {
+                nearest = Some(candidate);
+            }
+            remaining &= remaining - 1;
+        }
+    }
+    nearest
+}
+
+fn next_bin_with_liquidity(
+    env: &Env,
+    pool_id: u64,
+    current_bin: i32,
+    step: i32,
+    x_to_y: bool,
+) -> Option<i32> {
+    let output_available = |bin_id| {
+        let bin = get_bin(env, pool_id, bin_id);
+        if x_to_y { bin.reserve_y } else { bin.reserve_x }
+    };
+    let current_index = bin_array_index(current_bin);
+    let current_slot = bin_array_slot(current_bin) as i32;
+    let in_array_steps = if step > 0 { 69 - current_slot } else { current_slot };
+    for distance in 1..=in_array_steps {
+        let candidate = current_bin.checked_add(step * distance)?;
+        if output_available(candidate) > 0 {
+            return Some(candidate);
+        }
+    }
+
+    let mut array_index = current_index;
+    while let Some(next_index) = next_bin_array_with_liquidity(env, pool_id, array_index, step) {
+        let first = i64::from(next_index) * i64::from(BINS_PER_ARRAY)
+            + if step > 0 { 0 } else { i64::from(BINS_PER_ARRAY - 1) };
+        for offset in 0..BINS_PER_ARRAY {
+            let candidate = first + i64::from(step) * i64::from(offset);
+            let Ok(candidate) = i32::try_from(candidate) else {
+                return None;
+            };
+            if output_available(candidate) > 0 {
+                return Some(candidate);
+            }
+        }
+        array_index = next_index;
+    }
+    None
+}
+
+fn empty_bin_array(env: &Env, index: i32) -> BinArray {
+    let mut bins = Vec::new(env);
+    for _ in 0..BINS_PER_ARRAY {
+        bins.push_back(BinReserves::default());
+    }
+    BinArray {
+        index,
+        bins,
+        liquid_bin_count: 0,
+    }
+}
+
+fn get_bin_array(env: &Env, pool_id: u64, index: i32) -> BinArray {
+    env.storage()
+        .persistent()
+        .get(&DataKey::BinArray(pool_id, index))
+        .unwrap_or_else(|| empty_bin_array(env, index))
+}
+
+fn get_bin(env: &Env, pool_id: u64, bin_id: i32) -> BinReserves {
+    let array = get_bin_array(env, pool_id, bin_array_index(bin_id));
+    array.bins.get(bin_array_slot(bin_id)).unwrap_or_default()
+}
+
+fn set_bin(env: &Env, pool_id: u64, bin_id: i32, reserves: &BinReserves) {
+    let index = bin_array_index(bin_id);
+    let mut array = get_bin_array(env, pool_id, index);
+    let slot = bin_array_slot(bin_id);
+    let previous = array.bins.get(slot).unwrap_or_default();
+    let was_liquid = previous.reserve_x > 0 || previous.reserve_y > 0;
+    let is_liquid = reserves.reserve_x > 0 || reserves.reserve_y > 0;
+    match (was_liquid, is_liquid) {
+        (false, true) => array.liquid_bin_count += 1,
+        (true, false) => array.liquid_bin_count -= 1,
+        _ => {}
+    }
+    array.bins.set(slot, reserves.clone());
+    env.storage()
+        .persistent()
+        .set(&DataKey::BinArray(pool_id, index), &array);
+    track_array(env, pool_id, index);
+    if was_liquid != is_liquid {
+        update_bin_array_bitmap(env, pool_id, index, array.liquid_bin_count > 0);
+    }
+}
+
+fn get_fee_state(env: &Env, pool_id: u64) -> FeeState {
+    env.storage()
+        .persistent()
+        .get(&DataKey::FeeState(pool_id))
+        .unwrap_or_default()
+}
+
+fn quote_fee_rate(
+    config: &PoolConfig,
+    active_bin: i32,
+    timestamp: u64,
+    stored: FeeState,
+) -> (i128, FeeState) {
+    let next = update_volatility(
+        MathVolatilityState {
+            volatility_reference: stored.volatility_reference,
+            volatility_accumulator: stored.volatility_accumulator,
+            index_reference: stored.index_reference,
+            last_update_timestamp: stored.last_update_timestamp as i128,
+        },
+        active_bin as i128,
+        timestamp as i128,
+        VolatilityParams {
+            filter_period: config.filter_period as i128,
+            decay_period: config.decay_period as i128,
+            reduction_factor: config.reduction_factor,
+            max_volatility_accumulator: config.max_volatility_accumulator,
+        },
+    );
+    let fee_rate = dlmm_fee_rate(
+        config.base_factor,
+        config.base_fee_power_factor as u32,
+        config.bin_step_bps,
+        config.variable_fee_control,
+        next.volatility_accumulator,
+    );
+    (
+        fee_rate,
+        FeeState {
+            volatility_reference: next.volatility_reference,
+            volatility_accumulator: next.volatility_accumulator,
+            index_reference: next.index_reference,
+            last_update_timestamp: next.last_update_timestamp as u64,
+        },
+    )
 }
 
 fn get_share(env: &Env, pool_id: u64, user: &Address, bin_id: i32) -> i128 {
@@ -255,6 +528,119 @@ fn get_total_share(env: &Env, pool_id: u64, bin_id: i32) -> i128 {
         .persistent()
         .get(&DataKey::TotalShare(pool_id, bin_id))
         .unwrap_or(0i128)
+}
+
+fn settle_position_fees(
+    env: &Env,
+    pool_id: u64,
+    user: &Address,
+    bin_id: i32,
+    shares: i128,
+    bin: &BinReserves,
+) -> PositionFeeState {
+    let key = DataKey::PositionFeeState(pool_id, user.clone(), bin_id);
+    let mut position: PositionFeeState = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_default();
+    if shares > 0 {
+        let earned_x = pending_position_fee(
+            bin.fee_growth_x_per_share,
+            position.fee_growth_x_checkpoint,
+            shares,
+        );
+        let earned_y = pending_position_fee(
+            bin.fee_growth_y_per_share,
+            position.fee_growth_y_checkpoint,
+            shares,
+        );
+        position.pending_x = position.pending_x.checked_add(earned_x).expect("pending x overflow");
+        position.pending_y = position.pending_y.checked_add(earned_y).expect("pending y overflow");
+    }
+    position.fee_growth_x_checkpoint = bin.fee_growth_x_per_share;
+    position.fee_growth_y_checkpoint = bin.fee_growth_y_per_share;
+    env.storage().persistent().set(&key, &position);
+    position
+}
+
+fn read_position_fees(
+    env: &Env,
+    pool_id: u64,
+    user: &Address,
+    bin_id: i32,
+    shares: i128,
+    bin: &BinReserves,
+) -> PositionFeeState {
+    let mut position: PositionFeeState = env
+        .storage()
+        .persistent()
+        .get(&DataKey::PositionFeeState(pool_id, user.clone(), bin_id))
+        .unwrap_or_default();
+    if shares > 0 {
+        position.pending_x += pending_position_fee(
+            bin.fee_growth_x_per_share,
+            position.fee_growth_x_checkpoint,
+            shares,
+        );
+        position.pending_y += pending_position_fee(
+            bin.fee_growth_y_per_share,
+            position.fee_growth_y_checkpoint,
+            shares,
+        );
+    }
+    position
+}
+
+fn accrue_lp_fee_values(
+    bin: &mut BinReserves,
+    balance: &mut LpFeeBalance,
+    fee_amount: i128,
+    fee_is_x: bool,
+    total_shares: i128,
+) {
+    if fee_amount <= 0 || total_shares <= 0 {
+        return;
+    }
+    let growth = fee_growth_per_share(fee_amount, total_shares);
+    if fee_is_x {
+        bin.fee_growth_x_per_share = bin
+            .fee_growth_x_per_share
+            .checked_add(growth)
+            .expect("fee growth x overflow");
+        balance.amount_x = balance.amount_x.checked_add(fee_amount).expect("LP fee x overflow");
+    } else {
+        bin.fee_growth_y_per_share = bin
+            .fee_growth_y_per_share
+            .checked_add(growth)
+            .expect("fee growth y overflow");
+        balance.amount_y = balance.amount_y.checked_add(fee_amount).expect("LP fee y overflow");
+    }
+}
+
+fn accrue_lp_fee(
+    env: &Env,
+    pool_id: u64,
+    bin_id: i32,
+    bin: &mut BinReserves,
+    fee_amount: i128,
+    fee_is_x: bool,
+) {
+    let mut balance: LpFeeBalance = env
+        .storage()
+        .persistent()
+        .get(&DataKey::LpFeeBalance(pool_id, bin_id))
+        .unwrap_or_default();
+    accrue_lp_fee_values(
+        bin,
+        &mut balance,
+        fee_amount,
+        fee_is_x,
+        get_total_share(env, pool_id, bin_id),
+    );
+    env.storage()
+        .persistent()
+        .set(&DataKey::LpFeeBalance(pool_id, bin_id), &balance);
 }
 
 fn set_total_share(env: &Env, pool_id: u64, bin_id: i32, shares: i128) {
@@ -296,6 +682,132 @@ fn get_protocol_fee_y(env: &Env, pool_id: u64) -> i128 {
         .unwrap_or(0i128)
 }
 
+fn calculate_exact_out_swap(
+    env: &Env,
+    pool_id: u64,
+    config: &PoolConfig,
+    caller: &Address,
+    x_to_y: bool,
+    amount_out: i128,
+    timestamp: u64,
+) -> (SwapExactOutResult, Vec<BinSwapUpdate>, FeeState) {
+    let mut remaining_out = amount_out;
+    let mut active_bin = get_active_bin(env, pool_id);
+    let mut fee_state = get_fee_state(env, pool_id);
+    let mut updates = Vec::new(env);
+    let mut amount_in_total = 0i128;
+    let mut fee_total = 0i128;
+    let mut protocol_fee_total = 0i128;
+    let mut bins_crossed = 0u32;
+    let step: i32 = if x_to_y { -1 } else { 1 };
+    let fee_on_input = config.collect_fee_mode == 0 || !x_to_y;
+
+    for _ in 0..50 {
+        if remaining_out == 0 {
+            break;
+        }
+
+        let mut bin = get_bin(env, pool_id, active_bin);
+        let price = bin_price(config.bin_step_bps, active_bin as i128);
+        let (fee_rate, next_fee_state) =
+            quote_fee_rate(config, active_bin, timestamp, fee_state);
+        fee_state = next_fee_state;
+        let quoted = quote_exact_out_bin(
+            remaining_out,
+            bin.reserve_x,
+            bin.reserve_y,
+            price,
+            x_to_y,
+            fee_rate,
+            fee_on_input,
+            config.protocol_share_bps,
+        );
+
+        if quoted.amount_out == 0 {
+            let Some(next_bin) = next_bin_with_liquidity(env, pool_id, active_bin, step, x_to_y)
+            else {
+                break;
+            };
+            active_bin = next_bin;
+            continue;
+        }
+
+        if x_to_y {
+            bin.reserve_x = bin
+                .reserve_x
+                .checked_add(quoted.reserve_in_added)
+                .expect("overflow exact-out reserve x");
+            bin.reserve_y = bin
+                .reserve_y
+                .checked_sub(quoted.reserve_out_removed)
+                .expect("underflow exact-out reserve y");
+        } else {
+            bin.reserve_y = bin
+                .reserve_y
+                .checked_add(quoted.reserve_in_added)
+                .expect("overflow exact-out reserve y");
+            bin.reserve_x = bin
+                .reserve_x
+                .checked_sub(quoted.reserve_out_removed)
+                .expect("underflow exact-out reserve x");
+        }
+
+        let fee_is_x = x_to_y == fee_on_input;
+        let mut lp_fee_balance: LpFeeBalance = env
+            .storage()
+            .persistent()
+            .get(&DataKey::LpFeeBalance(pool_id, active_bin))
+            .unwrap_or_default();
+        accrue_lp_fee_values(
+            &mut bin,
+            &mut lp_fee_balance,
+            quoted.lp_fee,
+            fee_is_x,
+            get_total_share(env, pool_id, active_bin),
+        );
+
+        updates.push_back(BinSwapUpdate {
+            bin_id: active_bin,
+            reserves: bin,
+            lp_fee_balance,
+        });
+        remaining_out -= quoted.amount_out;
+        amount_in_total = amount_in_total
+            .checked_add(quoted.amount_in)
+            .expect("overflow exact-out input");
+        fee_total = fee_total
+            .checked_add(quoted.fee)
+            .expect("overflow exact-out fee");
+        protocol_fee_total = protocol_fee_total
+            .checked_add(quoted.protocol_fee)
+            .expect("overflow exact-out protocol fee");
+        bins_crossed += 1;
+
+        if remaining_out > 0 {
+            let Some(next_bin) = next_bin_with_liquidity(env, pool_id, active_bin, step, x_to_y)
+            else {
+                break;
+            };
+            active_bin = next_bin;
+        }
+    }
+
+    assert!(remaining_out == 0, "insufficient liquidity for exact output");
+    let _ = caller;
+    (
+        SwapExactOutResult {
+            amount_in: amount_in_total,
+            amount_out,
+            fee_paid: fee_total,
+            protocol_fee: protocol_fee_total,
+            bins_crossed,
+            final_bin: active_bin,
+        },
+        updates,
+        fee_state,
+    )
+}
+
 /// Value of a bin denominated in token Y units, at the bin's fixed price.
 fn bin_value_in_y(bin: &BinReserves, price: i128) -> i128 {
     bin.reserve_y + compute_y_from_x(bin.reserve_x, price)
@@ -326,34 +838,12 @@ impl DlmmContract {
         env.storage().persistent().set(&DataKey::Admin, &admin);
         env.storage()
             .persistent()
-            .set(&DataKey::ProtocolFeeBps, &2000i128);
-        env.storage()
-            .persistent()
             .set(&DataKey::PoolCounter, &0u64);
     }
 
-    /// Contract admin — can adjust the protocol fee split and withdraw
-    /// accrued protocol fees. Does not gate pool creation (permissionless).
+    /// Contract admin that can withdraw accrued protocol fees.
     pub fn get_admin(env: Env) -> Address {
         get_admin(&env)
-    }
-
-    /// Update the contract-wide protocol fee split (admin only).
-    /// `new_bps` is the protocol's share of every swap fee, in basis points
-    /// of the fee itself (e.g. 2000 = protocol keeps 20% of the fee, LPs
-    /// keep the remaining 80%).
-    pub fn set_protocol_fee_bps(env: Env, admin: Address, new_bps: i128) {
-        admin.require_auth();
-        assert!(admin == get_admin(&env), "not admin");
-        assert!(new_bps >= 0 && new_bps <= 5000, "protocol fee out of range");
-        env.storage()
-            .persistent()
-            .set(&DataKey::ProtocolFeeBps, &new_bps);
-    }
-
-    /// Current contract-wide protocol fee split, in bps of the swap fee.
-    pub fn get_protocol_fee_bps(env: Env) -> i128 {
-        get_protocol_fee_bps(&env)
     }
 
     // -----------------------------------------------------------------------
@@ -370,19 +860,56 @@ impl DlmmContract {
         token_x: Address,
         token_y: Address,
         bin_step_bps: i128,
-        base_fee_bps: i128,
+        fee_config: PoolFeeConfig,
         active_bin_id: i32,
         activation_ts: u64,
     ) -> u64 {
         creator.require_auth();
         assert!(token_x != token_y, "token_x and token_y must differ");
         assert!(
-            bin_step_bps >= 1 && bin_step_bps <= 500,
+            bin_step_bps >= 1 && bin_step_bps <= 400,
             "bin_step_bps out of range"
         );
         assert!(
-            base_fee_bps >= 1 && base_fee_bps <= 100,
-            "base_fee_bps out of range"
+            (0..=u16::MAX as i128).contains(&fee_config.base_factor),
+            "base_factor out of range"
+        );
+        assert!(
+            (0..=u8::MAX as i128).contains(&fee_config.base_fee_power_factor),
+            "base_fee_power_factor out of range"
+        );
+        assert!(
+            fee_config.decay_period >= fee_config.filter_period,
+            "invalid fee periods"
+        );
+        assert!(
+            fee_config.filter_period <= u32::MAX as u64
+                && fee_config.decay_period <= u32::MAX as u64,
+            "fee period exceeds u32"
+        );
+        assert!(
+            (0..=10_000).contains(&fee_config.reduction_factor),
+            "reduction_factor out of range"
+        );
+        assert!(
+            (0..=u32::MAX as i128).contains(&fee_config.variable_fee_control),
+            "variable fee control out of range"
+        );
+        assert!(
+            (0..=u32::MAX as i128).contains(&fee_config.max_volatility_accumulator),
+            "volatility accumulator cap out of range"
+        );
+        assert!(
+            (0..=2_500).contains(&fee_config.protocol_share_bps),
+            "protocol share out of range"
+        );
+        assert!(
+            (0..=1).contains(&fee_config.function_type),
+            "invalid pool function type"
+        );
+        assert!(
+            (0..=1).contains(&fee_config.collect_fee_mode),
+            "invalid collect fee mode"
         );
 
         let pool_id: u64 = env
@@ -398,7 +925,16 @@ impl DlmmContract {
             token_x,
             token_y,
             bin_step_bps,
-            base_fee_bps,
+            base_factor: fee_config.base_factor,
+            base_fee_power_factor: fee_config.base_fee_power_factor,
+            filter_period: fee_config.filter_period,
+            decay_period: fee_config.decay_period,
+            reduction_factor: fee_config.reduction_factor,
+            variable_fee_control: fee_config.variable_fee_control,
+            max_volatility_accumulator: fee_config.max_volatility_accumulator,
+            protocol_share_bps: fee_config.protocol_share_bps,
+            function_type: fee_config.function_type,
+            collect_fee_mode: fee_config.collect_fee_mode,
             creator: creator.clone(),
             activation_ts,
         };
@@ -408,9 +944,21 @@ impl DlmmContract {
         env.storage()
             .persistent()
             .set(&DataKey::Active(pool_id), &active_bin_id);
+        let now = env.ledger().timestamp();
+        env.storage().persistent().set(
+            &DataKey::FeeState(pool_id),
+            &FeeState {
+                index_reference: active_bin_id as i128,
+                last_update_timestamp: now,
+                ..FeeState::default()
+            },
+        );
         env.storage()
             .persistent()
-            .set(&DataKey::LastTs(pool_id), &env.ledger().timestamp());
+            .set(&DataKey::ArrayIndices(pool_id), &Vec::<i32>::new(&env));
+        env.storage()
+            .persistent()
+            .set(&DataKey::BinArrayBitmapPages(pool_id), &Vec::<i32>::new(&env));
 
         let mut all_pools: Vec<u64> = env
             .storage()
@@ -422,7 +970,7 @@ impl DlmmContract {
 
         env.events().publish(
             (symbol_short!("NEW_POOL"), pool_id),
-            (creator, bin_step_bps, base_fee_bps, activation_ts),
+            (creator, bin_step_bps, fee_config.base_factor, activation_ts),
         );
 
         pool_id
@@ -495,6 +1043,8 @@ impl DlmmContract {
         // Value the deposit and the bin (in token Y terms) to mint shares.
         let price = bin_price(config.bin_step_bps, bin_id as i128);
         let mut bin = get_bin(&env, pool_id, bin_id);
+        let shares_before = get_share(&env, pool_id, &caller, bin_id);
+        settle_position_fees(&env, pool_id, &caller, bin_id, shares_before, &bin);
         let bin_value_before = bin_value_in_y(&bin, price);
         let deposit_value = amount_y + compute_y_from_x(amount_x, price);
 
@@ -521,10 +1071,9 @@ impl DlmmContract {
             pool_id,
             &caller,
             bin_id,
-            get_share(&env, pool_id, &caller, bin_id) + shares_minted,
+            shares_before + shares_minted,
         );
 
-        track_bin(&env, pool_id, bin_id);
         track_user_bin(&env, pool_id, &caller, bin_id);
 
         env.events().publish(
@@ -546,6 +1095,7 @@ impl DlmmContract {
         assert!(total_shares > 0, "no shares issued");
 
         let mut bin = get_bin(&env, pool_id, bin_id);
+        settle_position_fees(&env, pool_id, &caller, bin_id, user_shares, &bin);
         let x_out = bin
             .reserve_x
             .checked_mul(user_shares)
@@ -637,6 +1187,53 @@ impl DlmmContract {
         )
     }
 
+    /// Claim swap fees accrued by this user's bin shares without removing liquidity.
+    pub fn claim_fee(env: Env, pool_id: u64, caller: Address, bin_id: i32) -> (i128, i128) {
+        caller.require_auth();
+        let config = get_pool_config(&env, pool_id);
+        let bin = get_bin(&env, pool_id, bin_id);
+        let shares = get_share(&env, pool_id, &caller, bin_id);
+        let mut position = settle_position_fees(&env, pool_id, &caller, bin_id, shares, &bin);
+        let fee_key = DataKey::LpFeeBalance(pool_id, bin_id);
+        let mut balance: LpFeeBalance = env
+            .storage()
+            .persistent()
+            .get(&fee_key)
+            .unwrap_or_default();
+        let amount_x = position.pending_x.min(balance.amount_x);
+        let amount_y = position.pending_y.min(balance.amount_y);
+        assert!(amount_x > 0 || amount_y > 0, "no fees to claim");
+
+        position.pending_x -= amount_x;
+        position.pending_y -= amount_y;
+        balance.amount_x -= amount_x;
+        balance.amount_y -= amount_y;
+        env.storage()
+            .persistent()
+            .set(&DataKey::PositionFeeState(pool_id, caller.clone(), bin_id), &position);
+        env.storage().persistent().set(&fee_key, &balance);
+
+        if amount_x > 0 {
+            token::Client::new(&env, &config.token_x).transfer(
+                &env.current_contract_address(),
+                &caller,
+                &amount_x,
+            );
+        }
+        if amount_y > 0 {
+            token::Client::new(&env, &config.token_y).transfer(
+                &env.current_contract_address(),
+                &caller,
+                &amount_y,
+            );
+        }
+        env.events().publish(
+            (symbol_short!("CLAIM_FEE"), pool_id, bin_id),
+            (caller, amount_x, amount_y),
+        );
+        (amount_x, amount_y)
+    }
+
     // -----------------------------------------------------------------------
     // Swap
     // -----------------------------------------------------------------------
@@ -659,11 +1256,9 @@ impl DlmmContract {
         let now = env.ledger().timestamp();
         assert!(now >= config.activation_ts, "pool not active yet");
 
-        let protocol_fee_bps = get_protocol_fee_bps(&env);
-        let seconds_since = (now - get_last_trade_ts(&env, pool_id)) as i128;
-        let fee_bps = dynamic_fee(config.base_fee_bps, seconds_since);
-
+        let protocol_fee_bps = config.protocol_share_bps;
         let mut active_bin = get_active_bin(&env, pool_id);
+        let mut fee_state = get_fee_state(&env, pool_id);
         let mut remaining = amount_in;
         let mut total_out: i128 = 0;
         let mut total_fee: i128 = 0;
@@ -686,62 +1281,84 @@ impl DlmmContract {
 
             let mut bin = get_bin(&env, pool_id, active_bin);
             let price = bin_price(config.bin_step_bps, active_bin as i128);
+            let (fee_rate, next_fee_state) =
+                quote_fee_rate(&config, active_bin, now, fee_state);
+            fee_state = next_fee_state;
+            let fee_on_input = config.collect_fee_mode == 0 || !x_to_y;
+            let step_result = quote_exact_in_bin(
+                remaining,
+                bin.reserve_x,
+                bin.reserve_y,
+                price,
+                x_to_y,
+                fee_rate,
+                fee_on_input,
+                protocol_fee_bps,
+            );
 
-            // Capacity of this bin (how much input it can absorb).
-            let (bin_capacity, out_available) = if x_to_y {
-                let cap = compute_x_from_y(bin.reserve_y, price);
-                (cap, bin.reserve_y)
-            } else {
-                let cap = compute_y_from_x(bin.reserve_x, price);
-                (cap, bin.reserve_x)
-            };
-
-            if bin_capacity == 0 {
-                active_bin += step;
+            if step_result.amount_in == 0 {
+                let Some(next_bin) =
+                    next_bin_with_liquidity(&env, pool_id, active_bin, step, x_to_y)
+                else {
+                    break;
+                };
+                active_bin = next_bin;
                 continue;
             }
 
-            let consumed = remaining.min(bin_capacity);
-            let fee = consumed * fee_bps / 10_000;
-            let protocol_fee = fee * protocol_fee_bps / 10_000;
-            let consumed_after_fee = consumed - fee;
-
-            let out = if x_to_y {
-                compute_y_from_x(consumed_after_fee, price).min(out_available)
-            } else {
-                compute_x_from_y(consumed_after_fee, price).min(out_available)
-            };
-
-            // Update bin reserves. The LP share of the fee (fee - protocol_fee)
-            // stays in the bin, accruing to LPs; the protocol share is
-            // withheld from the bin and tracked separately for withdrawal.
             if x_to_y {
                 bin.reserve_x = bin
                     .reserve_x
-                    .checked_add(consumed - protocol_fee)
+                    .checked_add(step_result.reserve_in_added)
                     .expect("overflow");
-                bin.reserve_y = bin.reserve_y.checked_sub(out).expect("underflow");
+                bin.reserve_y = bin
+                    .reserve_y
+                    .checked_sub(step_result.reserve_out_removed)
+                    .expect("underflow");
             } else {
                 bin.reserve_y = bin
                     .reserve_y
-                    .checked_add(consumed - protocol_fee)
+                    .checked_add(step_result.reserve_in_added)
                     .expect("overflow");
-                bin.reserve_x = bin.reserve_x.checked_sub(out).expect("underflow");
+                bin.reserve_x = bin
+                    .reserve_x
+                    .checked_sub(step_result.reserve_out_removed)
+                    .expect("underflow");
             }
+            let fee_is_x = x_to_y == fee_on_input;
+            accrue_lp_fee(
+                &env,
+                pool_id,
+                active_bin,
+                &mut bin,
+                step_result.lp_fee,
+                fee_is_x,
+            );
             set_bin(&env, pool_id, active_bin, &bin);
 
-            total_out = total_out.checked_add(out).expect("overflow out");
-            total_fee = total_fee.checked_add(fee).expect("overflow fee");
+            total_out = total_out
+                .checked_add(step_result.amount_out)
+                .expect("overflow out");
+            total_fee = total_fee
+                .checked_add(step_result.fee)
+                .expect("overflow fee");
             total_protocol_fee = total_protocol_fee
-                .checked_add(protocol_fee)
+                .checked_add(step_result.protocol_fee)
                 .expect("overflow protocol fee");
-            remaining -= consumed;
+            remaining -= step_result.amount_in;
             bins_crossed += 1;
 
-            if consumed >= bin_capacity {
-                active_bin += step;
+            if remaining > 0 {
+                let Some(next_bin) =
+                    next_bin_with_liquidity(&env, pool_id, active_bin, step, x_to_y)
+                else {
+                    break;
+                };
+                active_bin = next_bin;
             }
         }
+
+        assert!(remaining == 0, "insufficient liquidity for exact input");
 
         assert!(total_out >= min_amount_out, "slippage: insufficient output");
 
@@ -765,23 +1382,26 @@ impl DlmmContract {
         // Credit the protocol's share to the claimable balance (already held
         // by the contract as part of `spent`, just not left in the bin).
         if total_protocol_fee > 0 {
-            if x_to_y {
-                let bal = get_protocol_fee_x(&env, pool_id) + total_protocol_fee;
-                env.storage()
-                    .persistent()
-                    .set(&DataKey::ProtoFeeX(pool_id), &bal);
-            } else {
+            let fee_is_y = config.collect_fee_mode == 1 || !x_to_y;
+            if fee_is_y {
                 let bal = get_protocol_fee_y(&env, pool_id) + total_protocol_fee;
                 env.storage()
                     .persistent()
                     .set(&DataKey::ProtoFeeY(pool_id), &bal);
+            } else {
+                let bal = get_protocol_fee_x(&env, pool_id) + total_protocol_fee;
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::ProtoFeeX(pool_id), &bal);
             }
         }
 
         env.storage()
             .persistent()
             .set(&DataKey::Active(pool_id), &active_bin);
-        env.storage().persistent().set(&DataKey::LastTs(pool_id), &now);
+        env.storage()
+            .persistent()
+            .set(&DataKey::FeeState(pool_id), &fee_state);
 
         env.events().publish(
             (symbol_short!("SWAP"), pool_id, x_to_y),
@@ -795,6 +1415,86 @@ impl DlmmContract {
             bins_crossed,
             final_bin: active_bin,
         }
+    }
+
+    /// Swap for an exact output amount, reverting if `max_amount_in` is exceeded.
+    pub fn swap_exact_out_bin(
+        env: Env,
+        pool_id: u64,
+        caller: Address,
+        x_to_y: bool,
+        amount_out: i128,
+        max_amount_in: i128,
+    ) -> SwapExactOutResult {
+        caller.require_auth();
+        assert!(amount_out > 0, "zero amount_out");
+        assert!(max_amount_in > 0, "zero max_amount_in");
+
+        let config = get_pool_config(&env, pool_id);
+        let now = env.ledger().timestamp();
+        assert!(now >= config.activation_ts, "pool not active yet");
+        let (result, updates, fee_state) = calculate_exact_out_swap(
+            &env,
+            pool_id,
+            &config,
+            &caller,
+            x_to_y,
+            amount_out,
+            now,
+        );
+        assert!(result.amount_in <= max_amount_in, "slippage: input exceeds maximum");
+
+        for update in updates.iter() {
+            set_bin(&env, pool_id, update.bin_id, &update.reserves);
+            env.storage().persistent().set(
+                &DataKey::LpFeeBalance(pool_id, update.bin_id),
+                &update.lp_fee_balance,
+            );
+        }
+
+        let input_token = if x_to_y { &config.token_x } else { &config.token_y };
+        let output_token = if x_to_y { &config.token_y } else { &config.token_x };
+        token::Client::new(&env, input_token).transfer(
+            &caller,
+            &env.current_contract_address(),
+            &result.amount_in,
+        );
+        token::Client::new(&env, output_token).transfer(
+            &env.current_contract_address(),
+            &caller,
+            &result.amount_out,
+        );
+
+        if result.protocol_fee > 0 {
+            let fee_is_y = config.collect_fee_mode == 1 || !x_to_y;
+            let fee_key = if fee_is_y {
+                DataKey::ProtoFeeY(pool_id)
+            } else {
+                DataKey::ProtoFeeX(pool_id)
+            };
+            let current: i128 = env.storage().persistent().get(&fee_key).unwrap_or(0);
+            env.storage()
+                .persistent()
+                .set(&fee_key, &(current + result.protocol_fee));
+        }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Active(pool_id), &result.final_bin);
+        env.storage()
+            .persistent()
+            .set(&DataKey::FeeState(pool_id), &fee_state);
+        env.events().publish(
+            (symbol_short!("SWAP_OUT"), pool_id, x_to_y),
+            (
+                caller,
+                result.amount_in,
+                result.amount_out,
+                result.fee_paid,
+                result.protocol_fee,
+            ),
+        );
+        result
     }
 
     // -----------------------------------------------------------------------
@@ -811,19 +1511,34 @@ impl DlmmContract {
         get_bin(&env, pool_id, bin_id)
     }
 
+    /// Return one initialized array of 70 consecutive bin entries.
+    pub fn get_bin_array(env: Env, pool_id: u64, index: i32) -> BinArray {
+        get_bin_array(&env, pool_id, index)
+    }
+
+    /// List initialized bin-array indexes for a pool.
+    pub fn get_bin_array_indices(env: Env, pool_id: u64) -> Vec<i32> {
+        get_array_indices(&env, pool_id)
+    }
+
     /// Return every bin that currently holds liquidity in `pool_id`, with
     /// its reserves.
     pub fn get_bins(env: Env, pool_id: u64) -> Vec<BinInfo> {
-        let all = get_all_bins(&env, pool_id);
         let mut out: Vec<BinInfo> = Vec::new(&env);
-        for bin_id in all.iter() {
-            let bin = get_bin(&env, pool_id, bin_id);
-            if bin.reserve_x > 0 || bin.reserve_y > 0 {
-                out.push_back(BinInfo {
-                    bin_id,
-                    reserve_x: bin.reserve_x,
-                    reserve_y: bin.reserve_y,
-                });
+        for array_index in get_array_indices(&env, pool_id).iter() {
+            let array = get_bin_array(&env, pool_id, array_index);
+            let first_bin = i64::from(array_index) * i64::from(BINS_PER_ARRAY);
+            for slot in 0..BINS_PER_ARRAY {
+                let bin = array.bins.get(slot).unwrap_or_default();
+                if bin.reserve_x > 0 || bin.reserve_y > 0 {
+                    let bin_id = i32::try_from(first_bin + i64::from(slot))
+                        .expect("bin array index out of range");
+                    out.push_back(BinInfo {
+                        bin_id,
+                        reserve_x: bin.reserve_x,
+                        reserve_y: bin.reserve_y,
+                    });
+                }
             }
         }
         out
@@ -840,6 +1555,7 @@ impl DlmmContract {
             }
             let total_shares = get_total_share(&env, pool_id, bin_id);
             let bin = get_bin(&env, pool_id, bin_id);
+            let fees = read_position_fees(&env, pool_id, &user, bin_id, shares, &bin);
             let (amount_x, amount_y) = if total_shares > 0 {
                 (
                     bin.reserve_x.checked_mul(shares).expect("overflow") / total_shares,
@@ -854,6 +1570,8 @@ impl DlmmContract {
                 total_shares,
                 amount_x,
                 amount_y,
+                claimable_fee_x: fees.pending_x,
+                claimable_fee_y: fees.pending_y,
             });
         }
         out
@@ -865,6 +1583,7 @@ impl DlmmContract {
         let shares = get_share(&env, pool_id, &user, bin_id);
         let total_shares = get_total_share(&env, pool_id, bin_id);
         let bin = get_bin(&env, pool_id, bin_id);
+        let fees = read_position_fees(&env, pool_id, &user, bin_id, shares, &bin);
         let (amount_x, amount_y) = if total_shares > 0 && shares > 0 {
             (
                 bin.reserve_x.checked_mul(shares).expect("overflow") / total_shares,
@@ -879,6 +1598,8 @@ impl DlmmContract {
             total_shares,
             amount_x,
             amount_y,
+            claimable_fee_x: fees.pending_x,
+            claimable_fee_y: fees.pending_y,
         }
     }
 
@@ -895,11 +1616,9 @@ impl DlmmContract {
         let config = get_pool_config(&env, pool_id);
         let now = env.ledger().timestamp();
         assert!(now >= config.activation_ts, "pool not active yet");
-        let protocol_fee_bps = get_protocol_fee_bps(&env);
-        let seconds_since = (now - get_last_trade_ts(&env, pool_id)) as i128;
-        let fee_bps = dynamic_fee(config.base_fee_bps, seconds_since);
-
+        let protocol_fee_bps = config.protocol_share_bps;
         let mut active_bin = get_active_bin(&env, pool_id);
+        let mut fee_state = get_fee_state(&env, pool_id);
         let mut remaining = amount_in;
         let mut total_out: i128 = 0;
         let mut total_fee: i128 = 0;
@@ -915,37 +1634,47 @@ impl DlmmContract {
             }
             let bin = get_bin(&env, pool_id, active_bin);
             let price = bin_price(config.bin_step_bps, active_bin as i128);
+            let (fee_rate, next_fee_state) =
+                quote_fee_rate(&config, active_bin, now, fee_state);
+            fee_state = next_fee_state;
+            let fee_on_input = config.collect_fee_mode == 0 || !x_to_y;
+            let step_result = quote_exact_in_bin(
+                remaining,
+                bin.reserve_x,
+                bin.reserve_y,
+                price,
+                x_to_y,
+                fee_rate,
+                fee_on_input,
+                protocol_fee_bps,
+            );
 
-            let (bin_capacity, out_available) = if x_to_y {
-                (compute_x_from_y(bin.reserve_y, price), bin.reserve_y)
-            } else {
-                (compute_y_from_x(bin.reserve_x, price), bin.reserve_x)
-            };
-
-            if bin_capacity == 0 {
-                active_bin += step;
+            if step_result.amount_in == 0 {
+                let Some(next_bin) =
+                    next_bin_with_liquidity(&env, pool_id, active_bin, step, x_to_y)
+                else {
+                    break;
+                };
+                active_bin = next_bin;
                 continue;
             }
-
-            let consumed = remaining.min(bin_capacity);
-            let fee = consumed * fee_bps / 10_000;
-            let protocol_fee = fee * protocol_fee_bps / 10_000;
-            let out = if x_to_y {
-                compute_y_from_x(consumed - fee, price).min(out_available)
-            } else {
-                compute_x_from_y(consumed - fee, price).min(out_available)
-            };
-
-            total_out += out;
-            total_fee += fee;
-            total_protocol_fee += protocol_fee;
-            remaining -= consumed;
+            total_out += step_result.amount_out;
+            total_fee += step_result.fee;
+            total_protocol_fee += step_result.protocol_fee;
+            remaining -= step_result.amount_in;
             bins_crossed += 1;
 
-            if consumed >= bin_capacity {
-                active_bin += step;
+            if remaining > 0 {
+                let Some(next_bin) =
+                    next_bin_with_liquidity(&env, pool_id, active_bin, step, x_to_y)
+                else {
+                    break;
+                };
+                active_bin = next_bin;
             }
         }
+
+        assert!(remaining == 0, "insufficient liquidity for exact input");
 
         SwapResult {
             amount_out: total_out,
@@ -954,5 +1683,161 @@ impl DlmmContract {
             bins_crossed,
             final_bin: active_bin,
         }
+    }
+
+    /// Read-only exact-output quote using the same per-bin planner as execution.
+    pub fn simulate_swap_exact_out(
+        env: Env,
+        pool_id: u64,
+        x_to_y: bool,
+        amount_out: i128,
+    ) -> SwapExactOutResult {
+        assert!(amount_out > 0, "zero amount_out");
+        let config = get_pool_config(&env, pool_id);
+        let now = env.ledger().timestamp();
+        assert!(now >= config.activation_ts, "pool not active yet");
+        let caller = get_admin(&env);
+        calculate_exact_out_swap(
+            &env,
+            pool_id,
+            &config,
+            &caller,
+            x_to_y,
+            amount_out,
+            now,
+        )
+        .0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::testutils::Address as _;
+
+    #[test]
+    fn new_pool_accepts_one_sided_token_x_position() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let token_x = env.register_stellar_asset_contract(admin.clone());
+        let token_y = env.register_stellar_asset_contract(admin.clone());
+        let contract_id = env.register_contract(None, DlmmContract);
+        let client = DlmmContractClient::new(&env, &contract_id);
+
+        client.initialize(&admin);
+        let pool_id = client.create_pool(
+            &creator,
+            &token_x,
+            &token_y,
+            &25,
+            &PoolFeeConfig {
+                base_factor: 4_000,
+                base_fee_power_factor: 0,
+                filter_period: 30,
+                decay_period: 300,
+                reduction_factor: 5_000,
+                variable_fee_control: 10_000,
+                max_volatility_accumulator: 200_000,
+                protocol_share_bps: 1_000,
+                function_type: 0,
+                collect_fee_mode: 0,
+            },
+            &0,
+            &0,
+        );
+        token::StellarAssetClient::new(&env, &token_x).mint(&creator, &1_000_000);
+
+        client.add_liquidity_bin(&pool_id, &creator, &0, &1_000_000, &0);
+
+        let bin = client.get_bin_reserves(&pool_id, &0);
+        assert_eq!(bin.reserve_x, 1_000_000);
+        assert_eq!(bin.reserve_y, 0);
+    }
+
+    #[test]
+    fn bin_array_indexing_uses_70_bins_and_euclidean_negative_ranges() {
+        assert_eq!(bin_array_index(-71), -2);
+        assert_eq!(bin_array_slot(-71), 69);
+        assert_eq!(bin_array_index(-70), -1);
+        assert_eq!(bin_array_slot(-70), 0);
+        assert_eq!(bin_array_index(-1), -1);
+        assert_eq!(bin_array_slot(-1), 69);
+        assert_eq!(bin_array_index(0), 0);
+        assert_eq!(bin_array_slot(0), 0);
+        assert_eq!(bin_array_index(69), 0);
+        assert_eq!(bin_array_slot(69), 69);
+        assert_eq!(bin_array_index(70), 1);
+        assert_eq!(bin_array_slot(70), 0);
+    }
+
+    #[test]
+    fn empty_bin_array_has_fixed_width() {
+        let env = Env::default();
+        let array = empty_bin_array(&env, -1);
+        assert_eq!(array.index, -1);
+        assert_eq!(array.bins.len(), BINS_PER_ARRAY);
+        let last_bin = array.bins.get(69).unwrap();
+        assert_eq!(last_bin.reserve_x, 0);
+        assert_eq!(last_bin.reserve_y, 0);
+    }
+
+    #[test]
+    fn lp_fee_checkpoint_is_pro_rata_and_idempotent() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, DlmmContract);
+        let first_lp = Address::generate(&env);
+        let second_lp = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            set_total_share(&env, 7, 4, 100);
+            let mut bin = BinReserves::default();
+            let mut balance = LpFeeBalance::default();
+            accrue_lp_fee_values(&mut bin, &mut balance, 120, true, 100);
+            env.storage()
+                .persistent()
+                .set(&DataKey::LpFeeBalance(7, 4), &balance);
+
+            let first = settle_position_fees(&env, 7, &first_lp, 4, 25, &bin);
+            let second = settle_position_fees(&env, 7, &second_lp, 4, 75, &bin);
+            assert_eq!(first.pending_x, 30);
+            assert_eq!(second.pending_x, 90);
+
+            let first_again = settle_position_fees(&env, 7, &first_lp, 4, 25, &bin);
+            assert_eq!(first_again.pending_x, 30);
+        });
+    }
+
+    #[test]
+    fn liquidity_bitmap_finds_next_bin_across_empty_arrays() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, DlmmContract);
+
+        env.as_contract(&contract_id, || {
+            set_bin(
+                &env,
+                9,
+                -71,
+                &BinReserves {
+                    reserve_y: 10,
+                    ..BinReserves::default()
+                },
+            );
+            assert_eq!(next_bin_with_liquidity(&env, 9, -100, 1, true), Some(-71));
+            set_bin(&env, 9, -71, &BinReserves::default());
+            assert_eq!(next_bin_with_liquidity(&env, 9, -100, 1, true), None);
+
+            set_bin(
+                &env,
+                9,
+                140,
+                &BinReserves {
+                    reserve_x: 10,
+                    ..BinReserves::default()
+                },
+            );
+            assert_eq!(next_bin_with_liquidity(&env, 9, 70, 1, false), Some(140));
+        });
     }
 }

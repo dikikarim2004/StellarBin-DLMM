@@ -19,16 +19,21 @@ import { useWallet } from "@/contexts/wallet";
 import { WalletModal } from "@/components/wallet-modal";
 import { useToast } from "@/hooks/use-toast";
 import { DEMO_POOL_TOKENS, DEFAULT_POOL_ID } from "@/lib/contracts";
+import { DLMM_V2_CONTRACT_ID } from "@/lib/contracts";
 import { displayToStroops, stroopsToDisplay } from "@/lib/stellar";
 import {
   getOnChainSwapQuote,
+  getOnChainExactOutQuote,
   buildSwapTransaction,
+  buildExactOutSwapTransaction,
   submitSignedSwap,
+  submitSignedExactOutSwap,
   type SwapQuote,
 } from "@/lib/dlmm-client";
 
 const SLIPPAGE_PRESETS = ["0.1", "0.5", "1.0"];
 const DEFAULT_POOL_RECORD_ID = `dlmm-${DEFAULT_POOL_ID}`;
+type SwapMode = "exact-in" | "exact-out";
 
 export default function SwapPage() {
   const tokens = DEMO_POOL_TOKENS;
@@ -37,6 +42,7 @@ export default function SwapPage() {
 
   const [tokenInId, setTokenInId] = useState(tokens[0].address);
   const [tokenOutId, setTokenOutId] = useState(tokens[1].address);
+  const [swapMode, setSwapMode] = useState<SwapMode>("exact-in");
   const [amountIn, setAmountIn] = useState("");
   const [slippage, setSlippage] = useState("0.5");
   const [customSlippage, setCustomSlippage] = useState("");
@@ -73,7 +79,7 @@ export default function SwapPage() {
     debounceRef.current = setTimeout(async () => {
       setQuotePending(true);
       try {
-        const amountInStroops = displayToStroops(amountIn);
+        const amountSpecified = displayToStroops(amountIn);
 
         // Fetch fresh pool list inside the effect so routing never uses stale cache
         const allPools = await listPools();
@@ -82,8 +88,8 @@ export default function SwapPage() {
             (p) =>
               p.category === "dlmm" &&
               p.dlmmPoolId !== undefined &&
-              // For x→y (sell XLM, get TESTUSD) we need TESTUSD in pool (reserveY)
-              // For y→x (sell TESTUSD, get XLM) we need XLM in pool (reserveX)
+              // For x→y (sell XLM, get USDC) we need USDC in pool (reserveY)
+              // For y→x (sell USDC, get XLM) we need XLM in pool (reserveX)
               (xToY ? (p.reserveY ?? 0) > 0.0001 : (p.reserveX ?? 0) > 0.0001)
           )
           .map((p) => p.dlmmPoolId as number);
@@ -92,18 +98,34 @@ export default function SwapPage() {
         const poolsToTry = candidatePoolIds.length > 0 ? candidatePoolIds : [DEFAULT_POOL_ID];
         setPoolsTriedCount(poolsToTry.length);
 
-        // Try all candidate pools in parallel, pick the best output
+        // Try all candidate pools in parallel and optimize for the selected mode.
         const results = await Promise.allSettled(
           poolsToTry.map(async (poolId) => {
-            const q = await getOnChainSwapQuote(xToY, amountInStroops, poolId);
-            return { poolId, quote: q };
+            if (swapMode === "exact-in") {
+              const q = await getOnChainSwapQuote(xToY, amountSpecified, poolId);
+              return { poolId, quote: q };
+            }
+            const q = await getOnChainExactOutQuote(xToY, amountSpecified, poolId);
+            return {
+              poolId,
+              quote: {
+                amountIn: q.amountIn,
+                amountOut: q.amountOut,
+                feePaid: q.feePaid,
+                binsCrossed: q.binsCrossed,
+                finalBin: q.finalBin,
+              },
+            };
           })
         );
 
         let best: { poolId: number; quote: SwapQuote } | null = null;
         for (const r of results) {
           if (r.status === "fulfilled" && r.value.quote.amountOut > 0n) {
-            if (!best || r.value.quote.amountOut > best.quote.amountOut) {
+            const isBetter = swapMode === "exact-in"
+              ? r.value.quote.amountOut > best?.quote.amountOut!
+              : r.value.quote.amountIn < best?.quote.amountIn!;
+            if (!best || isBetter) {
               best = r.value;
             }
           }
@@ -116,7 +138,7 @@ export default function SwapPage() {
           setQuote(null);
           setBestPoolId(null);
           setQuoteError(
-            "No liquidity available for this swap. All pools have insufficient reserves."
+            `No ${tokenOut?.symbol ?? "output token"} reserves are available in the active pools. Single-sided deposits add only the deposited token; a swap needs real output reserves or an executable conversion route.`
           );
         }
       } catch (err) {
@@ -128,7 +150,7 @@ export default function SwapPage() {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [tokenInId, tokenOutId, amountIn, xToY]);
+  }, [tokenInId, tokenOutId, amountIn, xToY, swapMode]);
 
   function handleMaxAmount() {
     if (!tokenInBalance) return;
@@ -138,7 +160,11 @@ export default function SwapPage() {
   function handleFlip() {
     setTokenInId(tokenOutId);
     setTokenOutId(tokenInId);
-    setAmountIn(quote ? stroopsToDisplay(quote.amountOut) : "");
+    setAmountIn(
+      quote
+        ? stroopsToDisplay(swapMode === "exact-in" ? quote.amountOut : quote.amountIn)
+        : ""
+    );
     setQuote(null);
     setBestPoolId(null);
   }
@@ -151,24 +177,35 @@ export default function SwapPage() {
     if (!quote) return;
     setSigning(true);
     try {
-      const amountInStroops = displayToStroops(amountIn);
       const slippageBps = BigInt(Math.round(parseFloat(effectiveSlippage) * 100));
-      const minAmountOut = quote.amountOut - (quote.amountOut * slippageBps) / 10_000n;
-
       const routedPoolId = bestPoolId ?? DEFAULT_POOL_ID;
-      const prepared = await buildSwapTransaction(
-        wallet.address,
-        xToY,
-        amountInStroops,
-        minAmountOut,
-        routedPoolId
-      );
-      const signedXdr = await wallet.signTransaction(prepared.toXDR());
-      const result = await submitSignedSwap(signedXdr);
+      let received: bigint;
+      let feePaid: bigint;
+      if (swapMode === "exact-in") {
+        const amountInStroops = displayToStroops(amountIn);
+        const minAmountOut = quote.amountOut - (quote.amountOut * slippageBps) / 10_000n;
+        const prepared = await buildSwapTransaction(
+          wallet.address, xToY, amountInStroops, minAmountOut, routedPoolId
+        );
+        const signedXdr = await wallet.signTransaction(prepared.toXDR());
+        const result = await submitSignedSwap(signedXdr);
+        received = result.amountOut;
+        feePaid = result.feePaid;
+      } else {
+        const amountOutStroops = displayToStroops(amountIn);
+        const maxAmountIn = quote.amountIn + (quote.amountIn * slippageBps) / 10_000n;
+        const prepared = await buildExactOutSwapTransaction(
+          wallet.address, xToY, amountOutStroops, maxAmountIn, routedPoolId
+        );
+        const signedXdr = await wallet.signTransaction(prepared.toXDR());
+        const result = await submitSignedExactOutSwap(signedXdr);
+        received = result.amountOut;
+        feePaid = result.feePaid;
+      }
 
       toast({
         title: "Swap confirmed on-chain",
-        description: `Received ${stroopsToDisplay(result.amountOut)} ${tokenOut?.symbol} (fee: ${stroopsToDisplay(result.feePaid)}) via Pool #${routedPoolId}`,
+        description: `Received ${stroopsToDisplay(received)} ${tokenOut?.symbol} (fee: ${stroopsToDisplay(feePaid)}) via Pool #${routedPoolId}`,
       });
       setAmountIn("");
       setQuote(null);
@@ -188,7 +225,7 @@ export default function SwapPage() {
   const canSwap = !!tokenInId && !!tokenOutId && !!amountIn && parseFloat(amountIn) > 0;
 
   return (
-    <div className="max-w-md mx-auto space-y-6">
+    <div className="w-full space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold tracking-tight">Swap</h1>
         <Button
@@ -241,12 +278,27 @@ export default function SwapPage() {
         </Card>
       )}
 
+      <div className="inline-flex border border-border rounded-md p-1" role="group" aria-label="Swap mode">
+        {(["exact-in", "exact-out"] as const).map((mode) => (
+          <button
+            key={mode}
+            type="button"
+            onClick={() => setSwapMode(mode)}
+            disabled={mode === "exact-out" && !DLMM_V2_CONTRACT_ID}
+            className={`px-3 py-1.5 text-sm rounded-sm ${swapMode === mode ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
+            aria-pressed={swapMode === mode}
+          >
+            {mode === "exact-in" ? "Exact In" : `Exact Out${DLMM_V2_CONTRACT_ID ? "" : " (V2 required)"}`}
+          </button>
+        ))}
+      </div>
+
       {/* Swap card */}
       <Card className="p-4 border-border bg-card" data-testid="card-swap">
-        {/* You pay */}
+        {/* User-specified side */}
         <div className="space-y-1 pb-2">
           <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-            You pay
+            {swapMode === "exact-in" ? "You pay" : "You receive"}
           </label>
           <div className="flex gap-2 items-center">
             <Input
@@ -259,13 +311,13 @@ export default function SwapPage() {
             />
             <TokenSelect
               tokens={tokens}
-              value={tokenInId}
-              exclude={tokenOutId}
-              onChange={setTokenInId}
-              testId="select-token-in"
+              value={swapMode === "exact-in" ? tokenInId : tokenOutId}
+              exclude={swapMode === "exact-in" ? tokenOutId : tokenInId}
+              onChange={swapMode === "exact-in" ? setTokenInId : setTokenOutId}
+              testId={swapMode === "exact-in" ? "select-token-in" : "select-token-out"}
             />
           </div>
-          {wallet.connected && (
+          {swapMode === "exact-in" && wallet.connected && (
             <div className="flex items-center justify-end gap-1.5 text-xs text-muted-foreground pt-0.5">
               <span className="font-mono tabular-nums" data-testid="text-balance-in">
                 Balance: {tokenInBalance ?? "0.0000"} {tokenIn?.symbol ?? ""}
@@ -296,10 +348,10 @@ export default function SwapPage() {
           </Button>
         </div>
 
-        {/* You receive */}
+        {/* Quoted side */}
         <div className="space-y-1 pb-4">
           <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-            You receive
+            {swapMode === "exact-in" ? "You receive" : "You pay (estimated)"}
           </label>
           <div className="flex gap-2 items-center">
             <div className="flex-1 relative">
@@ -308,7 +360,9 @@ export default function SwapPage() {
                 placeholder="0.00"
                 readOnly
                 className="text-2xl font-mono bg-transparent border-none shadow-none focus-visible:ring-0 px-0 h-12 tabular-nums"
-                value={quote ? stroopsToDisplay(quote.amountOut) : ""}
+                value={quote
+                  ? stroopsToDisplay(swapMode === "exact-in" ? quote.amountOut : quote.amountIn)
+                  : ""}
                 data-testid="input-amount-out"
               />
               {quotePending && (
@@ -317,10 +371,10 @@ export default function SwapPage() {
             </div>
             <TokenSelect
               tokens={tokens}
-              value={tokenOutId}
-              exclude={tokenInId}
-              onChange={setTokenOutId}
-              testId="select-token-out"
+              value={swapMode === "exact-in" ? tokenOutId : tokenInId}
+              exclude={swapMode === "exact-in" ? tokenInId : tokenOutId}
+              onChange={swapMode === "exact-in" ? setTokenOutId : setTokenInId}
+              testId={swapMode === "exact-in" ? "select-token-out" : "select-token-in"}
             />
           </div>
         </div>
@@ -329,12 +383,18 @@ export default function SwapPage() {
         {quote && (
           <div className="border border-border rounded-md p-3 space-y-2 text-sm mb-4 bg-secondary/30">
             <QuoteRow
-              label="Minimum received"
+              label={swapMode === "exact-in" ? "Quoted output" : "Exact output"}
               value={`${stroopsToDisplay(quote.amountOut)} ${tokenOut?.symbol ?? ""}`}
             />
+            {swapMode === "exact-out" && (
+              <QuoteRow
+                label="Maximum input"
+                value={`${stroopsToDisplay(quote.amountIn + (quote.amountIn * BigInt(Math.round(parseFloat(effectiveSlippage) * 100))) / 10_000n)} ${tokenIn?.symbol ?? ""}`}
+              />
+            )}
             <QuoteRow
-              label="Swap fee"
-              value={`${stroopsToDisplay(quote.feePaid)} ${tokenIn?.symbol ?? ""}`}
+              label="Estimated fee (token units)"
+              value={stroopsToDisplay(quote.feePaid)}
             />
             <QuoteRow label="Bins crossed" value={`${quote.binsCrossed}`} />
             <QuoteRow label="Final bin" value={`${quote.finalBin}`} />

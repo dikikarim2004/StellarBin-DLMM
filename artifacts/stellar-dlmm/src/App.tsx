@@ -7,7 +7,7 @@ import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Activity, BarChart3, LayoutDashboard, ArrowLeftRight, Menu, PlusCircle } from "lucide-react";
 import NotFound from "@/pages/not-found";
 import SwapPage from "@/pages/swap";
-import PoolsPage from "@/pages/pools";
+import DiscoverPage from "@/pages/discover";
 import PoolDetailPage from "@/pages/pool-detail";
 import CreatePoolPage from "@/pages/create-pool";
 import PositionsPage from "@/pages/positions";
@@ -19,7 +19,7 @@ const queryClient = new QueryClient();
 
 const NAV_ITEMS = [
   { href: "/swap", label: "Swap", icon: ArrowLeftRight },
-  { href: "/pools", label: "Pools", icon: LayoutDashboard },
+  { href: "/pools", label: "Discover", icon: LayoutDashboard },
   { href: "/create", label: "Create", icon: PlusCircle },
   { href: "/positions", label: "Positions", icon: Activity },
   { href: "/analytics", label: "Analytics", icon: BarChart3 },
@@ -106,7 +106,7 @@ function Header() {
   return (
     <>
       <header className="sticky top-0 z-30 border-b border-border bg-background/85 backdrop-blur-md">
-        <div className="max-w-7xl mx-auto px-3 sm:px-6 h-16 flex items-center gap-3">
+        <div className="w-full px-4 sm:px-6 lg:px-8 h-16 flex items-center gap-3">
           <button
             className="md:hidden w-9 h-9 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-secondary/60 transition-colors shrink-0"
             onClick={() => setMobileNavOpen(true)}
@@ -170,7 +170,7 @@ function Layout({ children }: { children: React.ReactNode }) {
     <div className="min-h-[100dvh] bg-background text-foreground">
       <Header />
       <main>
-        <div className="max-w-7xl mx-auto p-4 sm:p-6 md:p-8">
+        <div className="w-full px-3 py-5 sm:px-6 sm:py-6 lg:px-8">
           {children}
         </div>
       </main>
@@ -188,7 +188,7 @@ function Router() {
           return null;
         }} />
         <Route path="/swap" component={SwapPage} />
-        <Route path="/pools" component={PoolsPage} />
+        <Route path="/pools" component={DiscoverPage} />
         <Route path="/pools/:poolId" component={PoolDetailPage} />
         <Route path="/create" component={CreatePoolPage} />
         <Route path="/positions" component={PositionsPage} />

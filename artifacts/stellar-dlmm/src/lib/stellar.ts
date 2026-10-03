@@ -211,10 +211,38 @@ export function encodeSwapExactIn(
 
 /** Decode a `SwapResult` struct returned by `swap_exact_in_bin`. */
 export interface SwapResultDecoded {
+  amountIn?: bigint;
   amountOut: bigint;
   feePaid: bigint;
   binsCrossed: number;
   finalBin: number;
+}
+
+export interface SwapExactOutResultDecoded {
+  amountIn: bigint;
+  amountOut: bigint;
+  feePaid: bigint;
+  protocolFee: bigint;
+  binsCrossed: number;
+  finalBin: number;
+}
+
+export function decodeSwapExactOutResult(val: xdr.ScVal): SwapExactOutResultDecoded {
+  const map = val.map()!;
+  const get = (key: string): xdr.ScVal => {
+    const entry = map.find((e) => e.key().sym().toString() === key);
+    if (!entry) throw new Error(`missing field: ${key}`);
+    return entry.val();
+  };
+
+  return {
+    amountIn: scValToI128(get("amount_in")),
+    amountOut: scValToI128(get("amount_out")),
+    feePaid: scValToI128(get("fee_paid")),
+    protocolFee: scValToI128(get("protocol_fee")),
+    binsCrossed: scValToNative(get("bins_crossed")) as number,
+    finalBin: scValToNative(get("final_bin")) as number,
+  };
 }
 
 export function decodeSwapResult(val: xdr.ScVal): SwapResultDecoded {

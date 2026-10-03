@@ -115,7 +115,7 @@ contracts/
 ├── math/
 │   ├── Cargo.toml          # Package: stellar-dlmm-math
 │   └── src/
-│       └── lib.rs          # bin_price(), dynamic_fee(), compute_x_from_y(), SCALAR
+│       └── lib.rs          # bin price, volatility fee, per-bin exact-in/out math
 ├── dlmm/
 │   ├── Cargo.toml          # Package: stellar-dlmm (depends on math)
 │   └── src/
@@ -215,7 +215,7 @@ cargo test -p stellar-dlmm-math -- --nocapture
 
 # Test spesifik
 cargo test test_bin_price_active
-cargo test test_dynamic_fee_no_activity
+cargo test test_volatility_accumulator_tracks_bin_movement
 ```
 
 **Test yang tersedia di `math/src/lib.rs`:**
@@ -224,8 +224,11 @@ cargo test test_dynamic_fee_no_activity
 | `test_bin_price_active` | offset=0 → price = 1.0 (SCALAR) |
 | `test_bin_price_positive` | offset=1, step=10000 → price = 2.0 |
 | `test_bin_price_negative` | offset=-1 → price ≈ 0.5 |
-| `test_dynamic_fee_no_activity` | 0 detik → 2x base fee |
-| `test_dynamic_fee_stale` | 300+ detik → base fee saja |
+| `test_volatility_accumulator_tracks_bin_movement` | Akumulator bertambah berdasarkan jarak bin |
+| `test_volatility_reference_reduces_after_filter_period` | Reference dikurangi sesuai reduction factor |
+| `test_volatility_reference_resets_after_decay_period` | Reference di-reset setelah decay period |
+| `test_dlmm_fee_rate_has_base_and_variable_components` | Fee dasar dan fee variabel dijumlahkan |
+| `test_dlmm_fee_rate_is_capped` | Fee total tidak melebihi batas kontrak |
 | `test_compute_y_from_x` | x=1, price=2 → y=2 |
 
 ---
@@ -278,7 +281,28 @@ MATH_CONTRACT=$(stellar contract deploy \
 echo "Math Contract ID: $MATH_CONTRACT"
 ```
 
-### 6.4 Deploy Kontrak DLMM Utama
+### 6.4 Deploy DLMM V2
+
+Source DLMM saat ini memiliki ABI/state baru. Gunakan script ini untuk deploy kontrak baru; kontrak live dan pool lama tidak ditimpa atau dimigrasikan.
+
+```bash
+cd contracts
+cp .env.example .env
+# Isi DLMM_DEPLOYER_KEY dengan identity testnet yang telah dibuat/funded.
+bash scripts/deploy_dlmm_v2.sh
+```
+
+Script membangun WASM release, deploy instance baru, memanggil `initialize`, lalu mencetak contract ID. Setelah meninjau ID itu, set `VITE_DLMM_V2_CONTRACT_ID` di `artifacts/stellar-dlmm/.env`, serta `DLMM_CONTRACT_ID` di `contracts/.env` dan `artifacts/api-server/.env`. Biarkan `VITE_DLMM_CONTRACT_ID` tetap menunjuk deployment legacy sampai siap mengganti jalur lama.
+
+Sebelum seed, isi seluruh fee/mode parameter di `contracts/.env` dari konfigurasi yang dipilih. Script tidak menetapkan fee economics default.
+
+```bash
+bash scripts/seed_pool.sh
+```
+
+`FUNCTION_TYPE=0` memilih limit-order mode; `1` memilih liquidity-mining mode. Mode itu mutually exclusive. `COLLECT_FEE_MODE=0` berarti input-only; `1` berarti fee dalam Token Y.
+
+### 6.5 Deploy Kontrak Math Utility
 
 ```bash
 DLMM_CONTRACT=$(stellar contract deploy \
@@ -289,7 +313,7 @@ DLMM_CONTRACT=$(stellar contract deploy \
 echo "DLMM Contract ID: $DLMM_CONTRACT"
 ```
 
-### 6.5 Deploy Kontrak Vault
+### 6.6 Deploy Kontrak Vault
 
 ```bash
 VAULT_CONTRACT=$(stellar contract deploy \
@@ -300,7 +324,7 @@ VAULT_CONTRACT=$(stellar contract deploy \
 echo "Vault Contract ID: $VAULT_CONTRACT"
 ```
 
-### 6.6 Simpan Contract IDs
+### 6.7 Simpan Contract IDs
 
 Buat file `.env.testnet` di root proyek:
 
@@ -421,27 +445,31 @@ stellar contract asset deploy \
   --source admin \
   --network testnet
 
-# USDC Testnet (biasanya sudah ada — cari di stellar.expert)
-# USDC Issuer testnet: GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5
+# Legacy USDC Testnet classic issuer account (used for trustlines):
+# GA5SH5Q6GUB5J3TNQ55I3B7FEOQJQTRJRD3OKNYRGEE323U3BYGLVAQO
+# Legacy USDC Stellar Asset Contract (used by pool 0):
+# CCTKVL3VAWCBY64NVXSQI7AMESCWXOWGGICYNZUTBSIKYXVEWFIBPD7N
+# Current DLMM V2 Testnet registry:
+# CCV3NLI6MRZ267E3DBVSLIO2UPNPLEHN7H6MYGQDH36OYN3IOXJBBSWG
+# For Soroban pool calls use the USDC SAC contract address (C...), not its
+# classic issuer account (G...):
+# CDYZE3XQZA2UYUTYEEVLOKSYDD44CQZ6LYJIKQEDIUYBXNVSNXEQVGEG
 ```
 
-### 9.2 Inisialisasi DLMM Pool
+### 9.2 Inisialisasi Contract dan Pool
 
 ```bash
-# Contoh: pool XLM/USDC, bin_step=25bps, base_fee=30bps, active_bin=0
+# Initialize contract registry after deploying the new DLMM instance.
 stellar contract invoke \
   --id $DLMM_CONTRACT_ID \
   --source admin \
   --network testnet \
   -- \
   initialize \
-  --admin $(stellar keys address admin) \
-  --token_x <XLM_SAC_ADDRESS> \
-  --token_y <USDC_SAC_ADDRESS> \
-  --bin_step_bps 25 \
-  --base_fee_bps 30 \
-  --active_bin_id 0
+  --admin $(stellar keys address admin)
 ```
+
+Create/seed a pool through `contracts/scripts/seed_pool.sh` after setting the complete `PoolFeeConfig` in `contracts/.env`. Do not use the legacy `base_fee_bps` ABI with V2.
 
 ### 9.3 Inisialisasi Vault
 
@@ -740,21 +768,26 @@ VAULT_CONTRACT_ID=CXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 
 | Fungsi | Parameter | Return | Keterangan |
 |---|---|---|---|
-| `initialize` | `admin, token_x, token_y, bin_step_bps, base_fee_bps, active_bin_id` | — | Inisialisasi pool, sekali saja |
+| `initialize` | `admin` | — | Inisialisasi contract registry satu kali |
+| `create_pool` | `creator, token_x, token_y, bin_step_bps, fee_config, active_bin_id, activation_ts` | `u64` | Membuat pool dengan fee, function type, dan collect-fee mode eksplisit |
 | `add_liquidity_bin` | `caller, bin_id, amount_x, amount_y` | — | Tambah likuiditas ke bin tertentu |
 | `remove_liquidity_bin` | `caller, bin_id` | — | Tarik semua likuiditas dari bin |
-| `swap_exact_in_bin` | `caller, x_to_y, amount_in, min_amount_out` | `SwapResult` | Swap dengan slippage guard |
-| `simulate_swap` | `x_to_y, amount_in` | `SwapResult` | Read-only quote, tanpa state change |
+| `swap_exact_in_bin` | `pool_id, caller, x_to_y, amount_in, min_amount_out` | `SwapResult` | Exact-input; gagal jika input tidak dapat digunakan seluruhnya |
+| `swap_exact_out_bin` | `pool_id, caller, x_to_y, amount_out, max_amount_in` | `SwapExactOutResult` | Exact-output dengan input/slippage guard |
+| `simulate_swap` | `pool_id, x_to_y, amount_in` | `SwapResult` | Read-only exact-input quote |
+| `simulate_swap_exact_out` | `pool_id, x_to_y, amount_out` | `SwapExactOutResult` | Read-only exact-output quote |
+| `claim_fee` | `pool_id, caller, bin_id` | `(i128, i128)` | Claim fee LP terpisah dari liquidity principal |
 | `get_active_bin` | — | `i32` | ID bin aktif saat ini |
 | `get_bin_reserves` | `bin_id` | `BinReserves` | Reserve token X & Y di bin |
+| `get_bin_array` | `pool_id, array_index` | `BinArray` | Baca 70 bin berurutan |
+| `get_bin_array_indices` | `pool_id` | `Vec<i32>` | Array yang pernah diinisialisasi |
 | `get_config` | — | `PoolConfig` | Konfigurasi pool lengkap |
 
 ### Math (`stellar-dlmm-math`)
 
 | Fungsi | Parameter | Return | Keterangan |
 |---|---|---|---|
-| `get_bin_price` | `bin_step_bps, offset` | `i128` | Harga bin dalam fixed-point 10^18 |
-| `get_dynamic_fee` | `base_fee_bps, seconds_since_last_trade` | `i128` | Fee efektif dalam bps |
+| `get_bin_price` | `bin_step_bps, bin_id` | `i128` | Harga global bin dalam fixed-point 10^18 |
 
 ### Vault (`stellar-dlmm-vault`)
 
@@ -790,10 +823,40 @@ struct PoolConfig {
   token_x:       Address,  // SAC address token base
   token_y:       Address,  // SAC address token quote
   bin_step_bps:  i128,     // Jarak harga antar bin (bps)
-  base_fee_bps:  i128,     // Fee dasar sebelum volatility adjustment
-  admin:         Address,  // Admin pool
+  base_factor: i128,
+  base_fee_power_factor: i128,
+  filter_period: u64,
+  decay_period: u64,
+  reduction_factor: i128,
+  variable_fee_control: i128,
+  max_volatility_accumulator: i128,
+  protocol_share_bps: i128,
+  function_type: i128,
+  collect_fee_mode: i128,
+}
+
+struct FeeState {
+  volatility_reference: i128,
+  volatility_accumulator: i128,
+  index_reference: i128,
+  last_update_timestamp: u64,
+}
+
+struct PoolFeeConfig {
+  base_factor: i128,
+  base_fee_power_factor: i128,
+  filter_period: u64,
+  decay_period: u64,
+  reduction_factor: i128,
+  variable_fee_control: i128,
+  max_volatility_accumulator: i128,
+  protocol_share_bps: i128,
+  function_type: i128,
+  collect_fee_mode: i128,
 }
 ```
+
+Fee period dinyatakan dalam detik. Base rate menggunakan `base_factor × bin_step × 10 × 10^base_fee_power_factor`; fee total memiliki cap 10%, dan protocol share dibatasi 0-2500 bps. Deployment V2 tidak memigrasikan kontrak atau pool lama.
 
 ### Unit Angka
 

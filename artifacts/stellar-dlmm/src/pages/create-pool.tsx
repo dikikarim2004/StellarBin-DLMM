@@ -32,7 +32,8 @@ import {
 import { useWallet } from "@/contexts/wallet";
 import { WalletModal } from "@/components/wallet-modal";
 import { useToast } from "@/hooks/use-toast";
-import { TOKEN_X, TOKEN_Y } from "@/lib/contracts";
+import { DLMM_V2_CONTRACT_ID, TOKEN_X, TOKEN_Y } from "@/lib/contracts";
+import { getSorobanTokenMetadata, type SorobanTokenMetadata } from "@/lib/dlmm-client";
 import {
   buildCreatePoolTransaction,
   decodeCreatedPoolId,
@@ -45,9 +46,8 @@ type PoolType = "standard" | "launch";
 const HORIZON_URL = "https://horizon-testnet.stellar.org";
 
 const BIN_STEP_PRESETS = [10, 25, 50, 100];
-const BASE_FEE_PRESETS = [10, 30, 100];
-const PLATFORM_FEE_BPS = 2000;
-const LP_FEE_BPS = 10000 - PLATFORM_FEE_BPS;
+type PoolFunctionMode = "limit-order" | "liquidity-mining";
+type CollectFeeMode = "input-only" | "only-y";
 
 interface KnownToken {
   symbol: string;
@@ -115,13 +115,46 @@ function TokenPicker({
 }) {
   const [open, setOpen] = useState(false);
   const [customInput, setCustomInput] = useState("");
+  const [tokenMetadata, setTokenMetadata] = useState<SorobanTokenMetadata | null>(null);
+  const [metadataLoading, setMetadataLoading] = useState(false);
+  const [metadataError, setMetadataError] = useState<string | null>(null);
 
   const selectedToken = KNOWN_TOKENS.find((t) => t.address === value);
   const isCustom = !selectedToken && value.length > 0;
+  useEffect(() => {
+    if (!isCustom) {
+      setTokenMetadata(null);
+      setMetadataError(null);
+      setMetadataLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setTokenMetadata(null);
+    setMetadataError(null);
+    setMetadataLoading(true);
+    getSorobanTokenMetadata(value)
+      .then((metadata) => {
+        if (!cancelled) setTokenMetadata(metadata);
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setMetadataError(error instanceof Error ? error.message : "Unable to resolve token metadata.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setMetadataLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isCustom, value]);
+
   const displayLabel = selectedToken
     ? selectedToken.symbol
     : isCustom
-    ? `Custom (${value.slice(0, 8)}…)`
+    ? tokenMetadata?.symbol ?? (metadataLoading ? "Detecting ticker…" : `Custom (${value.slice(0, 8)}…)`)
     : "Select token";
 
   function handleSelectKnown(address: string) {
@@ -130,9 +163,11 @@ function TokenPicker({
     setOpen(false);
   }
 
-  function handleCustomChange(raw: string) {
-    setCustomInput(raw);
-    onChange(raw.trim());
+  function useCustomAddress() {
+    const address = customInput.trim();
+    if (!address) return;
+    onChange(address);
+    setOpen(false);
   }
 
   return (
@@ -198,14 +233,14 @@ function TokenPicker({
               Or paste a custom contract address
             </p>
             <Input
-              placeholder="C… SAC address"
+              placeholder="C… token contract address"
               value={customInput}
-              onChange={(e) => handleCustomChange(e.target.value)}
+              onChange={(e) => setCustomInput(e.target.value)}
               className="font-mono text-xs h-8"
               data-testid={`${testId}-custom`}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && customInput.trim().length > 0) {
-                  setOpen(false);
+                  useCustomAddress();
                 }
               }}
             />
@@ -213,10 +248,7 @@ function TokenPicker({
               <Button
                 size="sm"
                 className="w-full h-7 text-xs"
-                onClick={() => {
-                  onChange(customInput.trim());
-                  setOpen(false);
-                }}
+                onClick={useCustomAddress}
               >
                 Use this address
               </Button>
@@ -226,9 +258,12 @@ function TokenPicker({
       </Popover>
 
       {value && (
-        <p className="text-[10px] font-mono text-muted-foreground truncate">
-          {value}
-        </p>
+        <div className="space-y-0.5">
+          <p className="text-[10px] font-mono text-muted-foreground truncate">{value}</p>
+          {metadataLoading && <p className="text-[10px] text-muted-foreground">Reading token metadata…</p>}
+          {metadataError && <p className="text-[10px] text-destructive">{metadataError}</p>}
+          {tokenMetadata && <p className="text-[10px] text-muted-foreground">{tokenMetadata.name} ({tokenMetadata.symbol})</p>}
+        </div>
       )}
     </div>
   );
@@ -248,7 +283,16 @@ export default function CreatePoolPage() {
   const [tokenXAddress, setTokenXAddress] = useState(TOKEN_X.address);
   const [tokenYAddress, setTokenYAddress] = useState(TOKEN_Y.address);
   const [binStepBps, setBinStepBps] = useState(25);
-  const [baseFeeBps, setBaseFeeBps] = useState(30);
+  const [baseFactor, setBaseFactor] = useState("4000");
+  const [baseFeePowerFactor, setBaseFeePowerFactor] = useState("0");
+  const [filterPeriod, setFilterPeriod] = useState("30");
+  const [decayPeriod, setDecayPeriod] = useState("300");
+  const [reductionFactor, setReductionFactor] = useState("5000");
+  const [variableFeeControl, setVariableFeeControl] = useState("10000");
+  const [maxVolatilityAccumulator, setMaxVolatilityAccumulator] = useState("200000");
+  const [protocolShareBps, setProtocolShareBps] = useState("1000");
+  const [functionMode, setFunctionMode] = useState<PoolFunctionMode | "">("limit-order");
+  const [collectFeeMode, setCollectFeeMode] = useState<CollectFeeMode | "">("input-only");
 
   // Initial price (user-facing). Converted to bin ID internally.
   const [initialPrice, setInitialPrice] = useState("1.00");
@@ -257,6 +301,22 @@ export default function CreatePoolPage() {
   const [creating, setCreating] = useState(false);
   const [createdPoolId, setCreatedPoolId] = useState<number | null>(null);
   const [walletBalances, setWalletBalances] = useState<Record<string, string>>({});
+  const [resolvedTokens, setResolvedTokens] = useState<Record<string, SorobanTokenMetadata>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    for (const address of [tokenXAddress, tokenYAddress]) {
+      if (KNOWN_TOKENS.some((token) => token.address === address)) continue;
+      getSorobanTokenMetadata(address)
+        .then((metadata) => {
+          if (!cancelled) setResolvedTokens((current) => ({ ...current, [address]: metadata }));
+        })
+        .catch(() => undefined);
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [tokenXAddress, tokenYAddress]);
 
   // Compute bin ID from price each render
   const parsedPrice = Number.parseFloat(initialPrice);
@@ -265,6 +325,12 @@ export default function CreatePoolPage() {
     : 0;
   // Round-trip: what price does this bin ID actually represent?
   const actualPrice = activeBinIdToPrice(activeBinId, binStepBps);
+  const baseFeeRate = /^\d+$/.test(baseFactor) && /^\d+$/.test(baseFeePowerFactor)
+    ? Math.min(
+        Number(baseFactor) * binStepBps * 10 * 10 ** Number(baseFeePowerFactor),
+        100_000_000,
+      )
+    : 0;
 
   const activationTs =
     poolType === "launch"
@@ -273,11 +339,32 @@ export default function CreatePoolPage() {
       : 0;
 
   const canSubmit =
+    !!DLMM_V2_CONTRACT_ID &&
     tokenXAddress.trim().length > 0 &&
     tokenYAddress.trim().length > 0 &&
     tokenXAddress.trim() !== tokenYAddress.trim() &&
     binStepBps > 0 &&
-    baseFeeBps > 0 &&
+    /^\d+$/.test(baseFactor) &&
+    BigInt(baseFactor || "0") <= 65_535n &&
+    /^\d+$/.test(baseFeePowerFactor) &&
+    BigInt(baseFeePowerFactor || "0") <= 255n &&
+    Number.isSafeInteger(Number(filterPeriod)) &&
+    Number(filterPeriod) >= 0 &&
+    Number(filterPeriod) <= 4_294_967_295 &&
+    Number.isSafeInteger(Number(decayPeriod)) &&
+    Number(decayPeriod) >= Number(filterPeriod) &&
+    Number(decayPeriod) <= 4_294_967_295 &&
+    Number.isSafeInteger(Number(reductionFactor)) &&
+    Number(reductionFactor) >= 0 &&
+    Number(reductionFactor) <= 10_000 &&
+    /^\d+$/.test(variableFeeControl) &&
+    BigInt(variableFeeControl || "0") <= 4_294_967_295n &&
+    /^\d+$/.test(maxVolatilityAccumulator) &&
+    BigInt(maxVolatilityAccumulator || "0") <= 4_294_967_295n &&
+    /^\d+$/.test(protocolShareBps) &&
+    BigInt(protocolShareBps || "0") <= 2_500n &&
+    functionMode !== "" &&
+    collectFeeMode !== "" &&
     Number.isFinite(parsedPrice) &&
     parsedPrice > 0 &&
     (poolType === "standard" ||
@@ -304,7 +391,16 @@ export default function CreatePoolPage() {
         tokenX: tokenXAddress.trim(),
         tokenY: tokenYAddress.trim(),
         binStepBps,
-        baseFeeBps,
+        baseFactor: BigInt(baseFactor),
+        baseFeePowerFactor: Number(baseFeePowerFactor),
+        filterPeriod: Number(filterPeriod),
+        decayPeriod: Number(decayPeriod),
+        reductionFactor: Number(reductionFactor),
+        variableFeeControl: BigInt(variableFeeControl),
+        maxVolatilityAccumulator: BigInt(maxVolatilityAccumulator),
+        protocolShareBps: Number(protocolShareBps),
+        functionType: functionMode === "limit-order" ? 0 : 1,
+        collectFeeMode: collectFeeMode === "input-only" ? 0 : 1,
         activeBinId,
         activationTs,
       });
@@ -332,7 +428,7 @@ export default function CreatePoolPage() {
 
   if (createdPoolId !== null) {
     return (
-      <div className="max-w-lg mx-auto text-center space-y-5 py-12">
+      <div className="w-full text-center space-y-5 py-12">
         <div className="w-14 h-14 rounded-full bg-primary/10 flex items-center justify-center mx-auto">
           {poolType === "launch" ? (
             <Rocket className="w-6 h-6 text-primary" />
@@ -370,12 +466,12 @@ export default function CreatePoolPage() {
   }
 
   const tokenXLabel =
-    KNOWN_TOKENS.find((t) => t.address === tokenXAddress)?.symbol ?? "Token X";
+    KNOWN_TOKENS.find((t) => t.address === tokenXAddress)?.symbol ?? resolvedTokens[tokenXAddress]?.symbol ?? "Token X";
   const tokenYLabel =
-    KNOWN_TOKENS.find((t) => t.address === tokenYAddress)?.symbol ?? "Token Y";
+    KNOWN_TOKENS.find((t) => t.address === tokenYAddress)?.symbol ?? resolvedTokens[tokenYAddress]?.symbol ?? "Token Y";
 
   return (
-    <div className="max-w-2xl mx-auto space-y-6">
+    <div className="w-full space-y-6">
       <div>
         <button
           onClick={() => setLocation("/pools")}
@@ -390,6 +486,11 @@ export default function CreatePoolPage() {
           Permissionlessly deploy a new bin-based liquidity pool into the DLMM
           registry contract.
         </p>
+        {!DLMM_V2_CONTRACT_ID && (
+          <p className="text-amber-500 mt-2 text-sm">
+            DLMM V2 is not configured. The live legacy contract uses a different create-pool ABI.
+          </p>
+        )}
       </div>
 
       {/* Pool type selector */}
@@ -438,12 +539,15 @@ export default function CreatePoolPage() {
           <Info className="w-3.5 h-3.5 mt-0.5 shrink-0" />
           <span>
             Any token with a Stellar Asset Contract (SAC) address can be used —
-            not just XLM and TESTUSD. To get a SAC address for a new token, run:{" "}
+            not just XLM and USDC. To get a SAC address for a new token, run:{" "}
             <span className="font-mono text-foreground">
               stellar contract asset deploy --asset CODE:ISSUER --network testnet
             </span>
           </span>
         </div>
+        <p className="text-xs text-muted-foreground">
+          Use a Soroban token contract address. Classic Stellar assets must first be wrapped as a SAC; other tokens must expose the SEP-41 interface.
+        </p>
 
         {/* Bin step */}
         <div className="space-y-1.5">
@@ -464,21 +568,45 @@ export default function CreatePoolPage() {
           </div>
         </div>
 
-        {/* Base fee */}
-        <div className="space-y-1.5">
-          <Label>Base fee</Label>
-          <div className="flex gap-2 flex-wrap">
-            {BASE_FEE_PRESETS.map((bps) => (
-              <PresetButton
-                key={bps}
-                active={baseFeeBps === bps}
-                onClick={() => setBaseFeeBps(bps)}
-              >
-                {(bps / 100).toFixed(2)}%
-              </PresetButton>
-            ))}
+        <div className="grid grid-cols-2 gap-3">
+          <FeeParameterInput label="Base factor (u16)" value={baseFactor} onChange={setBaseFactor} min="0" max="65535" />
+          <FeeParameterInput label="Base fee power (u8)" value={baseFeePowerFactor} onChange={setBaseFeePowerFactor} min="0" max="255" />
+        </div>
+
+        <div className="space-y-2">
+          <Label>Volatility fee parameters</Label>
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+            <FeeParameterInput label="Filter (seconds)" value={filterPeriod} onChange={setFilterPeriod} min="0" max="4294967295" />
+            <FeeParameterInput label="Decay (seconds)" value={decayPeriod} onChange={setDecayPeriod} min="0" max="4294967295" />
+            <FeeParameterInput label="Reduction (bps)" value={reductionFactor} onChange={setReductionFactor} min="0" max="10000" />
+            <FeeParameterInput label="Variable control" value={variableFeeControl} onChange={setVariableFeeControl} min="0" max="4294967295" />
+            <FeeParameterInput label="Max accumulator" value={maxVolatilityAccumulator} onChange={setMaxVolatilityAccumulator} min="0" max="4294967295" />
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Testnet starter profile: 30s filter, 300s decay, 50% reduction, 10,000 variable control, 200,000 cap. With a 25 bps bin step, the base fee is 10 bps and the variable component is capped near 25 bps.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <FeeParameterInput label="Protocol share (bps, max 2500)" value={protocolShareBps} onChange={setProtocolShareBps} min="0" max="2500" />
+          <div className="space-y-1.5">
+            <Label>Pool function</Label>
+            <div className="flex gap-2">
+              <PresetButton active={functionMode === "limit-order"} onClick={() => setFunctionMode("limit-order")}>Limit orders</PresetButton>
+              <PresetButton active={functionMode === "liquidity-mining"} onClick={() => setFunctionMode("liquidity-mining")}>Liquidity mining</PresetButton>
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <Label>Collect fee mode</Label>
+            <div className="flex gap-2">
+              <PresetButton active={collectFeeMode === "input-only"} onClick={() => setCollectFeeMode("input-only")}>Input only</PresetButton>
+              <PresetButton active={collectFeeMode === "only-y"} onClick={() => setCollectFeeMode("only-y")}>Token Y</PresetButton>
+            </div>
           </div>
         </div>
+        <p className="text-xs text-amber-500">
+          Pool function mode is metadata only in this build; limit-order execution and reward campaigns are not enabled.
+        </p>
 
         {/* Initial price + activation time */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -540,10 +668,7 @@ export default function CreatePoolPage() {
             label="Bin step"
             value={`${(binStepBps / 100).toFixed(2)}%`}
           />
-          <PreviewStat
-            label="Base fee"
-            value={`${(baseFeeBps / 100).toFixed(2)}%`}
-          />
+          <PreviewStat label="Base fee" value={`${(baseFeeRate / 10_000_000).toFixed(4)}%`} />
           <PreviewStat
             label="Initial price"
             value={
@@ -567,21 +692,12 @@ export default function CreatePoolPage() {
                 : "Immediate"
             }
           />
-          <PreviewStat label="LP / Protocol fee" value={`80% / 20%`} />
+          <PreviewStat label="LP / Protocol fee" value={`${(100 - Number(protocolShareBps || "0") / 100).toFixed(2)}% / ${(Number(protocolShareBps || "0") / 100).toFixed(2)}%`} />
         </div>
         <div className="flex items-start gap-2 text-xs text-muted-foreground bg-secondary/40 border border-border rounded-lg px-3 py-2">
           <Info className="w-3.5 h-3.5 mt-0.5 shrink-0" />
           <span>
-            Every swap fee collected by this pool is split{" "}
-            <span className="font-mono text-foreground">
-              {LP_FEE_BPS / 100}% to LPs
-            </span>{" "}
-            /{" "}
-            <span className="font-mono text-foreground">
-              {PLATFORM_FEE_BPS / 100}% to the protocol treasury
-            </span>
-            , enforced on-chain by the DLMM contract's admin-adjustable fee
-            split.
+            The pool stores the protocol share, function type, and fee-token mode on-chain.
           </span>
         </div>
       </Card>
@@ -669,6 +785,37 @@ function PresetButton({
     >
       {children}
     </button>
+  );
+}
+
+function FeeParameterInput({
+  label,
+  value,
+  onChange,
+  min,
+  max,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  min: string;
+  max?: string;
+}) {
+  const inputId = `fee-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+  return (
+    <div className="space-y-1.5">
+      <Label htmlFor={inputId}>{label}</Label>
+      <Input
+        id={inputId}
+        type="number"
+        min={min}
+        max={max}
+        step="1"
+        required
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    </div>
   );
 }
 

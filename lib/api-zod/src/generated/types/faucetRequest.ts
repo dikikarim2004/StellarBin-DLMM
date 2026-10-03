@@ -7,6 +7,6 @@
  */
 
 export interface FaucetRequest {
-  /** Destination Stellar account (G...) that already has a TESTUSD trustline */
+  /** Destination Stellar account (G...) that already has a USDC trustline */
   address: string;
 }

@@ -7,6 +7,7 @@ import {
   GetProtocolSummaryResponse,
   GetUserPositionsResponse,
   GetPoolRecentSwapsResponse,
+  GetPoolPositionEventsResponse,
 } from "@workspace/api-zod";
 import {
   getAllPools,
@@ -14,6 +15,7 @@ import {
   getPoolBins,
   getProtocolSummary,
   getUserPositions,
+  getPoolPositionEvents,
   getRecentSwaps,
 } from "../lib/stellar-reader";
 
@@ -126,6 +128,27 @@ router.get("/pools/:poolId/swaps", async (req, res) => {
   } catch (err) {
     req.log.error({ err }, "Failed to load recent swaps");
     return res.status(502).json({ error: "Failed to load on-chain swap events" });
+  }
+});
+
+router.get("/pools/:poolId/position-events/:address", async (req, res) => {
+  const address = req.params.address;
+  if (!address) return res.status(400).json({ error: "A wallet address is required" });
+
+  try {
+    const events = await getPoolPositionEvents(req.params.poolId, address);
+    if (events === null) {
+      return res.status(404).json({ error: "Pool not found or not a DLMM registry pool" });
+    }
+    const parsed = GetPoolPositionEventsResponse.safeParse(events);
+    if (!parsed.success) {
+      req.log.error({ error: parsed.error }, "Position event validation failed");
+      return res.status(500).json({ error: "Internal server error" });
+    }
+    return res.json(parsed.data);
+  } catch (err) {
+    req.log.error({ err }, "Failed to load liquidity position events");
+    return res.status(502).json({ error: "Failed to load recent position events" });
   }
 });
 

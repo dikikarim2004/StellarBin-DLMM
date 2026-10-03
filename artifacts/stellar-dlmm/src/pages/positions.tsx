@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { scValToNative } from "@stellar/stellar-sdk";
 import {
   useGetUserPositions,
   useGetPoolBins,
@@ -40,7 +41,11 @@ import {
 import { useWallet } from "@/contexts/wallet";
 import { WalletModal } from "@/components/wallet-modal";
 import { LiquidityModal } from "@/components/liquidity-modal";
+import { useToast } from "@/hooks/use-toast";
+import { buildClaimFeeTransaction, submitSignedTransaction } from "@/lib/dlmm-client";
+import { stroopsToDisplay } from "@/lib/stellar";
 import { Link } from "wouter";
+import { DLMM_V2_CONTRACT_ID } from "@/lib/contracts";
 
 interface CloseTarget {
   binId: number;
@@ -255,6 +260,7 @@ export default function PositionsPage() {
             setSelectedPos(null);
             setCloseTarget(target);
           }}
+          onClaimed={refetchPositions}
         />
       )}
 
@@ -284,12 +290,17 @@ function PositionDetailSheet({
   open,
   onOpenChange,
   onClose,
+  onClaimed,
 }: {
   pos: Position;
   open: boolean;
   onOpenChange: (o: boolean) => void;
   onClose: (target: CloseTarget) => void;
+  onClaimed: () => void;
 }) {
+  const wallet = useWallet();
+  const { toast } = useToast();
+  const [claimingFees, setClaimingFees] = useState(false);
   const binId = pos.binId ?? pos.binRangeLow;
   const pool = pos.pool;
   const tokenXSymbol = pool?.tokenX.symbol ?? "X";
@@ -314,6 +325,32 @@ function PositionDetailSheet({
       tokenYSymbol,
       poolId: pool?.dlmmPoolId,
     });
+  }
+
+  async function handleClaimFees() {
+    const poolId = pool?.dlmmPoolId;
+    if (!wallet.address || poolId === undefined) return;
+    setClaimingFees(true);
+    try {
+      const prepared = await buildClaimFeeTransaction(wallet.address, binId, poolId);
+      const signedXdr = await wallet.signTransaction(prepared.toXDR());
+      const returnValue = await submitSignedTransaction(signedXdr);
+      const claimed = scValToNative(returnValue as any) as [bigint, bigint];
+      toast({
+        title: "LP fees claimed",
+        description: `${stroopsToDisplay(claimed[0])} ${tokenXSymbol} and ${stroopsToDisplay(claimed[1])} ${tokenYSymbol}`,
+      });
+      await wallet.refreshBalance();
+      onClaimed();
+    } catch (error) {
+      toast({
+        title: "Fee claim failed",
+        description: error instanceof Error ? error.message : "Unknown error",
+        variant: "destructive",
+      });
+    } finally {
+      setClaimingFees(false);
+    }
   }
 
   return (
@@ -392,6 +429,12 @@ function PositionDetailSheet({
                   {(pos.shares ?? 0).toLocaleString("en", { maximumFractionDigits: 0 })}
                 </span>
               </div>
+              <div className="px-4 py-2.5 border-t border-border flex items-center justify-between">
+                <span className="text-xs text-muted-foreground">Claimable swap fees</span>
+                <span className="text-xs font-mono font-semibold">
+                  ${(pos.unrealizedFees ?? 0).toLocaleString("en", { maximumFractionDigits: 4 })}
+                </span>
+              </div>
             </div>
           </section>
 
@@ -428,9 +471,9 @@ function PositionDetailSheet({
               Pool Liquidity Distribution — Bin #{binId} Highlighted
             </h3>
             {binsLoading ? (
-              <Skeleton className="h-[180px] w-full" />
+              <Skeleton className="h-45 w-full" />
             ) : bins && bins.length > 0 ? (
-              <div className="h-[180px] w-full">
+              <div className="h-45 w-full">
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={bins} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
                     <XAxis
@@ -481,7 +524,7 @@ function PositionDetailSheet({
                 </ResponsiveContainer>
               </div>
             ) : (
-              <div className="h-[180px] flex items-center justify-center text-xs text-muted-foreground border border-border rounded-lg">
+              <div className="h-45 flex items-center justify-center text-xs text-muted-foreground border border-border rounded-lg">
                 Bin distribution data unavailable
               </div>
             )}
@@ -531,9 +574,8 @@ function PositionDetailSheet({
                 <p className="font-semibold text-foreground">About Closing a Position</p>
                 <p className="text-muted-foreground leading-relaxed">
                   In DLMM, there is <strong className="text-foreground">no separate "claim fee" function</strong>.
-                  Swap fees passing through this bin are directly added to the bin reserves — your LP share value
-                  increases automatically. When you <strong className="text-foreground">close your position (remove liquidity)</strong>,
-                  you receive back your full principal + all accumulated fees, proportional to your share count.
+                  Swap fees are tracked separately from bin principal and can be claimed without removing liquidity.
+                  Closing a position withdraws its pro-rata bin reserves; claimable fees remain a separate action.
                 </p>
                 <p className="text-muted-foreground mt-1">
                   <strong className="text-amber-400">⚠ P&amp;L vs original deposit:</strong>{" "}
@@ -548,15 +590,24 @@ function PositionDetailSheet({
         <div className="px-6 py-4 border-t border-border bg-background space-y-2">
           <Button
             className="w-full"
+            variant="outline"
+            onClick={handleClaimFees}
+            disabled={claimingFees || pool?.dlmmPoolId === undefined || !DLMM_V2_CONTRACT_ID}
+            data-testid="button-claim-position-fees"
+          >
+            {claimingFees ? "Claiming fees…" : DLMM_V2_CONTRACT_ID ? "Claim fees" : "Claim fees (V2 required)"}
+          </Button>
+          <Button
+            className="w-full"
             variant="destructive"
             onClick={handleClose}
             data-testid="button-close-position"
           >
             <Sparkles className="w-4 h-4 mr-2" />
-            Close Position &amp; Claim Fees
+            Close Position
           </Button>
           <p className="text-[10px] text-center text-muted-foreground">
-            Withdraw 100% liquidity from Bin #{binId} — principal + all accumulated fees will be returned
+            Withdraw 100% liquidity from Bin #{binId}; claimable swap fees are separate
           </p>
         </div>
       </SheetContent>

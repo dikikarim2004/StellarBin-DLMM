@@ -20,13 +20,13 @@ StellarBin is a full-stack **DLMM (Dynamic Liquidity Market Maker)** protocol bu
 
 | Contract | Address |
 |---|---|
-| **DLMM** (main protocol) | `CCW5MVYJFJPBJNJY7GN6BHC5BQR47RXVIM2T2X4F3YSQC7MQ7J4GNESH` |
+| **DLMM V2** (active registry) | `CCV3NLI6MRZ267E3DBVSLIO2UPNPLEHN7H6MYGQDH36OYN3IOXJBBSWG` |
 | **Vault** | `CCDVBRMT3BI65JV2C7AQJOSIGT76MNNTXSVYDKGXKPBSOKVWQRGKU7VI` |
 | **Math library** | `CB7U2EL6L4AR2IWANOSXDYVHWL3D3PD3XOZU6PUA4MDAVWCOT3AAVX4Z` |
 | **Native XLM (SAC)** | `CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC` |
-| **USDC (SAC)** | `GA5SH5Q6GUB5J3TNQ55I3B7FEOQJQTRJRD3OKNYRGEE323U3BYGLVAQO` |
+| **USDC Soroban token** | `CDYZE3XQZA2UYUTYEEVLOKSYDD44CQZ6LYJIKQEDIUYBXNVSNXEQVGEG` |
 
-Pool `0` is the default seeded Standard Pool (XLM / USDC, bin step 25 bps, base fee 10 bps).
+The active registry's default is XLM/USDC Standard Pool `0` (25 bps bin step, 10 bps base fee). It is registered with no liquidity initially. The USDC contract is `CDYZE…`; its classic issuer account is `GABZWK2YLPOGBEOZT6VOCID6ROSSZGPSLAEPCTWIBGAJDHISO6DFKYYZ`.
 
 ---
 
@@ -92,10 +92,14 @@ Key environment variables in `artifacts/stellar-dlmm/.env`:
 VITE_STELLAR_NETWORK=testnet
 VITE_STELLAR_RPC_URL=https://soroban-testnet.stellar.org
 VITE_STELLAR_HORIZON_URL=https://horizon-testnet.stellar.org
-VITE_DLMM_CONTRACT_ID=CCW5MVYJFJPBJNJY7GN6BHC5BQR47RXVIM2T2X4F3YSQC7MQ7J4GNESH
+VITE_DLMM_CONTRACT_ID=CCV3NLI6MRZ267E3DBVSLIO2UPNPLEHN7H6MYGQDH36OYN3IOXJBBSWG
+VITE_DLMM_V2_CONTRACT_ID=CCV3NLI6MRZ267E3DBVSLIO2UPNPLEHN7H6MYGQDH36OYN3IOXJBBSWG
 VITE_VAULT_CONTRACT_ID=CCDVBRMT3BI65JV2C7AQJOSIGT76MNNTXSVYDKGXKPBSOKVWQRGKU7VI
 VITE_TOKEN_X_ADDRESS=CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC
-VITE_TOKEN_Y_ADDRESS=CCA733ILFGI7SESYWNBYTKHUJTJTSU2ORRT6SFNSDZWHYSE4WDLLDUND
+VITE_TOKEN_X_SYMBOL=XLM
+VITE_TOKEN_Y_ADDRESS=CDYZE3XQZA2UYUTYEEVLOKSYDD44CQZ6LYJIKQEDIUYBXNVSNXEQVGEG
+VITE_TOKEN_Y_SYMBOL=USDC
+VITE_USDC_ISSUER=GABZWK2YLPOGBEOZT6VOCID6ROSSZGPSLAEPCTWIBGAJDHISO6DFKYYZ
 VITE_DEFAULT_POOL_ID=0
 ```
 
@@ -123,6 +127,14 @@ The API will be available at `http://localhost:5000`.
 pnpm --filter @workspace/stellar-dlmm run dev
 ```
 The frontend will be available at the port printed in the terminal (usually `http://localhost:5173`).
+
+---
+
+## Deploy to Vercel
+
+Import this repository and set **Root Directory** to `artifacts/api-server`. Enable **Include source files outside the Root Directory** so the workspace packages and frontend source are available to the build. The existing `artifacts/api-server/vercel.json` builds the Express API function and Vite frontend, then publishes the frontend from `artifacts/api-server/public`.
+
+Set `HOLDER_SECRET_KEY` in Vercel Project Environment Variables only if the testnet USDC faucet should be enabled. Never commit that value. The API starts without a database; `DATABASE_URL` is optional.
 
 ---
 
@@ -200,7 +212,7 @@ stellarbin/
 1. Install the [Freighter wallet extension](https://freighter.app) in your browser.
 2. Switch Freighter to **Testnet** mode.
 3. Fund your wallet using the [Stellar Testnet Friendbot](https://friendbot.stellar.org/?addr=YOUR_ADDRESS).
-4. For USDC, use the in-app faucet button in the Add Liquidity modal.
+4. Create a trustline and acquire the pool's actual USDC asset before opening a two-sided position. A single-sided XLM position does not create USDC reserves.
 
 ---
 

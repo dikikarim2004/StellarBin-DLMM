@@ -214,7 +214,7 @@ function SelectWalletView({
           Connect Wallet
         </DialogTitle>
         <p className="text-sm text-muted-foreground mt-1">
-          Connect a Stellar wallet to swap, add liquidity, and manage positions.
+          Connect a Stellar wallet to swap, open positions, and manage positions.
         </p>
       </DialogHeader>
 

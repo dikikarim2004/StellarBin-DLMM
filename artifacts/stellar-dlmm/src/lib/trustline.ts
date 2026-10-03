@@ -1,10 +1,10 @@
 /**
  * Classic-asset trustline helpers.
  *
- * TESTUSD is a classic-asset-backed Stellar Asset Contract (SAC) — any wallet
- * that has never held TESTUSD needs a classic `changeTrust` trustline before
+ * USDC is a classic-asset-backed Stellar Asset Contract (SAC) — any wallet
+ * that has never held USDC needs a classic `changeTrust` trustline before
  * it can receive/hold the asset. Without one, both the faucet payment and the
- * DLMM contract's internal token transfer for the TESTUSD leg fail with a
+ * DLMM contract's internal token transfer for the USDC leg fail with a
  * "trustline" HostError. These helpers detect and fix that up front.
  */
 
@@ -21,30 +21,42 @@ import { TOKEN_Y } from "./contracts";
 const HORIZON_URL = "https://horizon-testnet.stellar.org";
 const NETWORK_PASSPHRASE = Networks.TESTNET;
 
-// Classic issuer of the TESTUSD SAC (same underlying asset as VITE_TOKEN_Y_ADDRESS,
-// addressed here in its classic G... issuer form since trustlines are a classic-ledger concept).
-export const TESTUSD_ISSUER =
-  import.meta.env.VITE_TESTUSD_ISSUER ?? "GD3HFFCVSBBQSHHXJGJLSRCAFTGRT5XFHSGCC2U7BDKBFPQWZWITDWQ2";
+// Classic issuer of the USDC SAC; trustlines use the issuer's G... address.
+export const USDC_ISSUER =
+  import.meta.env.VITE_USDC_ISSUER ?? "GA5SH5Q6GUB5J3TNQ55I3B7FEOQJQTRJRD3OKNYRGEE323U3BYGLVAQO";
 
-export const TESTUSD_ASSET = new Asset(TOKEN_Y.symbol, TESTUSD_ISSUER);
+export const USDC_ASSET = new Asset(TOKEN_Y.symbol, USDC_ISSUER);
 
 function horizonServer(): Horizon.Server {
   return new Horizon.Server(HORIZON_URL);
 }
 
-/** Returns true if `address` already has a trustline (or is the issuer itself) for TESTUSD. */
-export async function hasTestusdTrustline(address: string): Promise<boolean> {
+export async function getUsdcBalance(address: string): Promise<string> {
+  const account = await horizonServer().loadAccount(address);
+  const balance = account.balances.find(
+    (item) =>
+      (item.asset_type === "credit_alphanum4" || item.asset_type === "credit_alphanum12") &&
+      "asset_code" in item &&
+      item.asset_code === TOKEN_Y.symbol &&
+      "asset_issuer" in item &&
+      item.asset_issuer === USDC_ISSUER
+  );
+  return balance && "balance" in balance ? balance.balance : "0";
+}
+
+/** Returns true if `address` already has a trustline (or is the issuer itself) for USDC. */
+export async function hasUsdcTrustline(address: string): Promise<boolean> {
   try {
     const server = horizonServer();
     const account = await server.loadAccount(address);
-    if (address === TESTUSD_ISSUER) return true;
+    if (address === USDC_ISSUER) return true;
     return account.balances.some(
       (b) =>
         (b.asset_type === "credit_alphanum4" || b.asset_type === "credit_alphanum12") &&
         "asset_code" in b &&
         b.asset_code === TOKEN_Y.symbol &&
         "asset_issuer" in b &&
-        b.asset_issuer === TESTUSD_ISSUER
+        b.asset_issuer === USDC_ISSUER
     );
   } catch {
     // Account not found / network hiccup — treat as "no trustline" so the UI
@@ -62,7 +74,7 @@ export async function buildEstablishTrustlineTransaction(address: string) {
     fee: BASE_FEE,
     networkPassphrase: NETWORK_PASSPHRASE,
   })
-    .addOperation(Operation.changeTrust({ asset: TESTUSD_ASSET }))
+    .addOperation(Operation.changeTrust({ asset: USDC_ASSET }))
     .setTimeout(30)
     .build();
 }

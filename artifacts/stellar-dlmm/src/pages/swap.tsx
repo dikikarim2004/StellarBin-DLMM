@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { useWallet } from "@/contexts/wallet";
 import { WalletModal } from "@/components/wallet-modal";
+import { DexSwapPanel } from "@/components/dex-swap-panel";
 import { useToast } from "@/hooks/use-toast";
 import { DEMO_POOL_TOKENS, DEFAULT_POOL_ID, TOKEN_X } from "@/lib/contracts";
 import { DLMM_V2_CONTRACT_ID } from "@/lib/contracts";
@@ -233,6 +234,8 @@ export default function SwapPage() {
 
   const canSwap = !!tokenInId && !!tokenOutId && !!amountIn && parseFloat(amountIn) > 0;
 
+  const [swapVenue, setSwapVenue] = useState<"dlmm" | "dex">("dlmm");
+
   return (
     <div className="w-full space-y-6">
       <div className="flex items-center justify-between">
@@ -287,6 +290,25 @@ export default function SwapPage() {
         </Card>
       )}
 
+      <div className="inline-flex border border-border rounded-md p-1" role="group" aria-label="Swap venue">
+        {(["dlmm", "dex"] as const).map((v) => (
+          <button
+            key={v}
+            type="button"
+            onClick={() => setSwapVenue(v)}
+            className={`px-3 py-1.5 text-sm rounded-sm ${swapVenue === v ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
+            aria-pressed={swapVenue === v}
+            data-testid={`tab-venue-${v}`}
+          >
+            {v === "dlmm" ? "StellarBin DLMM" : "Stellar DEX"}
+          </button>
+        ))}
+      </div>
+
+      {swapVenue === "dex" && <DexSwapPanel />}
+
+      {swapVenue === "dlmm" && (
+      <>
       <div className="inline-flex border border-border rounded-md p-1" role="group" aria-label="Swap mode">
         {(["exact-in", "exact-out"] as const).map((mode) => (
           <button
@@ -470,6 +492,8 @@ export default function SwapPage() {
           </Button>
         )}
       </Card>
+      </>
+      )}
 
       {/* Recent Swaps — real SWAP events from the best routed pool */}
       <div className="space-y-3">

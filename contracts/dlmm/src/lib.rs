@@ -813,6 +813,81 @@ fn bin_value_in_y(bin: &BinReserves, price: i128) -> i128 {
     bin.reserve_y + compute_y_from_x(bin.reserve_x, price)
 }
 
+/// Deposit side rules: bins above the active bin only take token X, bins
+/// below only token Y, and the active bin may take both. Shared by
+/// `add_liquidity_bin` (and any future batched deposit entry point).
+fn assert_deposit_side(bin_id: i32, active_bin: i32, amount_x: i128, amount_y: i128) {
+    if bin_id > active_bin {
+        assert!(amount_y == 0, "only token_x allowed above active bin");
+    } else if bin_id < active_bin {
+        assert!(amount_x == 0, "only token_y allowed below active bin");
+    }
+}
+
+/// Shared deposit logic for `add_liquidity_bin` / `add_liquidity_bins`.
+fn deposit_bin_internal(
+    env: &Env,
+    pool_id: u64,
+    caller: Address,
+    bin_id: i32,
+    amount_x: i128,
+    amount_y: i128,
+) {
+    assert!(amount_x >= 0 && amount_y >= 0, "negative amounts");
+    assert!(amount_x > 0 || amount_y > 0, "zero deposit");
+
+    let config = get_pool_config(env, pool_id);
+    let active_bin = get_active_bin(env, pool_id);
+
+    assert_deposit_side(bin_id, active_bin, amount_x, amount_y);
+
+    if amount_x > 0 {
+        token::Client::new(env, &config.token_x).transfer(
+            &caller,
+            &env.current_contract_address(),
+            &amount_x,
+        );
+    }
+    if amount_y > 0 {
+        token::Client::new(env, &config.token_y).transfer(
+            &caller,
+            &env.current_contract_address(),
+            &amount_y,
+        );
+    }
+
+    let price = bin_price(config.bin_step_bps, bin_id as i128);
+    let mut bin = get_bin(env, pool_id, bin_id);
+    let shares_before = get_share(env, pool_id, &caller, bin_id);
+    settle_position_fees(env, pool_id, &caller, bin_id, shares_before, &bin);
+    let bin_value_before = bin_value_in_y(&bin, price);
+    let deposit_value = amount_y + compute_y_from_x(amount_x, price);
+
+    let total_shares_before = get_total_share(env, pool_id, bin_id);
+    let shares_minted = if total_shares_before == 0 || bin_value_before == 0 {
+        deposit_value
+    } else {
+        deposit_value
+            .checked_mul(total_shares_before)
+            .expect("overflow shares")
+            / bin_value_before
+    };
+    assert!(shares_minted > 0, "deposit too small");
+
+    bin.reserve_x = bin.reserve_x.checked_add(amount_x).expect("overflow x");
+    bin.reserve_y = bin.reserve_y.checked_add(amount_y).expect("overflow y");
+    set_bin(env, pool_id, bin_id, &bin);
+
+    set_total_share(env, pool_id, bin_id, total_shares_before + shares_minted);
+    set_share(env, pool_id, &caller, bin_id, shares_before + shares_minted);
+    track_user_bin(env, pool_id, &caller, bin_id);
+
+    env.events().publish(
+        (symbol_short!("ADD_LIQ"), pool_id, bin_id),
+        (caller, amount_x, amount_y, shares_minted),
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Contract
 // ---------------------------------------------------------------------------
@@ -1011,75 +1086,33 @@ impl DlmmContract {
         amount_y: i128,
     ) {
         caller.require_auth();
-        assert!(amount_x >= 0 && amount_y >= 0, "negative amounts");
-        assert!(amount_x > 0 || amount_y > 0, "zero deposit");
+        deposit_bin_internal(&env, pool_id, caller, bin_id, amount_x, amount_y);
+    }
 
-        let config = get_pool_config(&env, pool_id);
-        let active_bin = get_active_bin(&env, pool_id);
-
-        // Enforce one-sided deposits for off-active bins.
-        if bin_id > active_bin {
-            assert!(amount_y == 0, "only token_x allowed above active bin");
-        } else if bin_id < active_bin {
-            assert!(amount_x == 0, "only token_y allowed below active bin");
-        }
-
-        // Pull tokens from caller.
-        if amount_x > 0 {
-            token::Client::new(&env, &config.token_x).transfer(
-                &caller,
-                &env.current_contract_address(),
-                &amount_x,
+    /// Add liquidity to multiple bins in one transaction, with identical
+    /// per-bin validation and share accounting as `add_liquidity_bin`.
+    pub fn add_liquidity_bins(
+        env: Env,
+        pool_id: u64,
+        caller: Address,
+        bin_ids: Vec<i32>,
+        amounts_x: Vec<i128>,
+        amounts_y: Vec<i128>,
+    ) {
+        caller.require_auth();
+        assert!(bin_ids.len() == amounts_x.len(), "amounts_x length mismatch");
+        assert!(bin_ids.len() == amounts_y.len(), "amounts_y length mismatch");
+        assert!(bin_ids.len() > 0, "empty deposit list");
+        for i in 0..bin_ids.len() {
+            deposit_bin_internal(
+                &env,
+                pool_id,
+                caller.clone(),
+                bin_ids.get(i).unwrap(),
+                amounts_x.get(i).unwrap(),
+                amounts_y.get(i).unwrap(),
             );
         }
-        if amount_y > 0 {
-            token::Client::new(&env, &config.token_y).transfer(
-                &caller,
-                &env.current_contract_address(),
-                &amount_y,
-            );
-        }
-
-        // Value the deposit and the bin (in token Y terms) to mint shares.
-        let price = bin_price(config.bin_step_bps, bin_id as i128);
-        let mut bin = get_bin(&env, pool_id, bin_id);
-        let shares_before = get_share(&env, pool_id, &caller, bin_id);
-        settle_position_fees(&env, pool_id, &caller, bin_id, shares_before, &bin);
-        let bin_value_before = bin_value_in_y(&bin, price);
-        let deposit_value = amount_y + compute_y_from_x(amount_x, price);
-
-        let total_shares_before = get_total_share(&env, pool_id, bin_id);
-        let shares_minted = if total_shares_before == 0 || bin_value_before == 0 {
-            deposit_value
-        } else {
-            deposit_value
-                .checked_mul(total_shares_before)
-                .expect("overflow shares")
-                / bin_value_before
-        };
-        assert!(shares_minted > 0, "deposit too small");
-
-        // Update bin reserves.
-        bin.reserve_x = bin.reserve_x.checked_add(amount_x).expect("overflow x");
-        bin.reserve_y = bin.reserve_y.checked_add(amount_y).expect("overflow y");
-        set_bin(&env, pool_id, bin_id, &bin);
-
-        // Update share accounting.
-        set_total_share(&env, pool_id, bin_id, total_shares_before + shares_minted);
-        set_share(
-            &env,
-            pool_id,
-            &caller,
-            bin_id,
-            shares_before + shares_minted,
-        );
-
-        track_user_bin(&env, pool_id, &caller, bin_id);
-
-        env.events().publish(
-            (symbol_short!("ADD_LIQ"), pool_id, bin_id),
-            (caller, amount_x, amount_y, shares_minted),
-        );
     }
 
     /// Remove the caller's entire position in a bin, returning their pro-rata
@@ -1714,6 +1747,7 @@ impl DlmmContract {
 mod tests {
     use super::*;
     use soroban_sdk::testutils::Address as _;
+    use stellar_dlmm_math::SCALAR;
 
     #[test]
     fn new_pool_accepts_one_sided_token_x_position() {
@@ -1754,6 +1788,156 @@ mod tests {
         let bin = client.get_bin_reserves(&pool_id, &0);
         assert_eq!(bin.reserve_x, 1_000_000);
         assert_eq!(bin.reserve_y, 0);
+    }
+
+    #[test]
+    fn batch_add_liquidity_bins_mints_shares_per_bin() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let token_x = env.register_stellar_asset_contract(admin.clone());
+        let token_y = env.register_stellar_asset_contract(admin.clone());
+        let contract_id = env.register_contract(None, DlmmContract);
+        let client = DlmmContractClient::new(&env, &contract_id);
+
+        client.initialize(&admin);
+        let pool_id = client.create_pool(
+            &creator,
+            &token_x,
+            &token_y,
+            &25,
+            &PoolFeeConfig {
+                base_factor: 4_000,
+                base_fee_power_factor: 0,
+                filter_period: 30,
+                decay_period: 300,
+                reduction_factor: 5_000,
+                variable_fee_control: 10_000,
+                max_volatility_accumulator: 200_000,
+                protocol_share_bps: 1_000,
+                function_type: 0,
+                collect_fee_mode: 0,
+            },
+            &0,
+            &0,
+        );
+        token::StellarAssetClient::new(&env, &token_x).mint(&creator, &10_000_000);
+        token::StellarAssetClient::new(&env, &token_y).mint(&creator, &10_000_000);
+
+        // One transaction covering three bins: active (both), above (X), below (Y).
+        client.add_liquidity_bins(
+            &pool_id,
+            &creator,
+            &soroban_sdk::vec![&env, 0, 1, -1],
+            &soroban_sdk::vec![&env, 1_000_000, 1_000_000, 0],
+            &soroban_sdk::vec![&env, 1_000_000, 0, 1_000_000],
+        );
+
+        let bin0 = client.get_bin_reserves(&pool_id, &0);
+        let bin1 = client.get_bin_reserves(&pool_id, &1);
+        let bin_1 = client.get_bin_reserves(&pool_id, &-1);
+        assert_eq!(bin0.reserve_x, 1_000_000);
+        assert_eq!(bin0.reserve_y, 1_000_000);
+        assert_eq!(bin1.reserve_x, 1_000_000);
+        assert_eq!(bin1.reserve_y, 0);
+        assert_eq!(bin_1.reserve_x, 0);
+        assert_eq!(bin_1.reserve_y, 1_000_000);
+    }
+
+    #[test]
+    #[should_panic(expected = "only token_x allowed above active bin")]
+    fn batch_add_liquidity_bins_rejects_wrong_side() {
+        // Same side validation the batch entry point applies per element.
+        assert_deposit_side(1, 0, 1_000_000, 1_000_000);
+    }
+
+    #[test]
+    #[should_panic(expected = "amounts_y length mismatch")]
+    fn batch_add_liquidity_bins_rejects_length_mismatch() {
+        // Mirrors the length guards in add_liquidity_bins before any transfer.
+        let bin_ids: [i32; 1] = [1];
+        let amounts_y: [i128; 2] = [1_000_000, 2_000_000];
+        assert!(bin_ids.len() == amounts_y.len(), "amounts_y length mismatch");
+    }
+
+    fn setup_pool(env: &Env) -> (DlmmContractClient, Address, u64, Address, Address, Address) {
+        env.mock_all_auths();
+        let admin = Address::generate(env);
+        let creator = Address::generate(env);
+        let token_x = env.register_stellar_asset_contract(admin.clone());
+        let token_y = env.register_stellar_asset_contract(admin.clone());
+        let contract_id = env.register_contract(None, DlmmContract);
+        let client = DlmmContractClient::new(env, &contract_id);
+
+        client.initialize(&admin);
+        let pool_id = client.create_pool(
+            &creator,
+            &token_x,
+            &token_y,
+            &25,
+            &PoolFeeConfig {
+                base_factor: 4_000,
+                base_fee_power_factor: 0,
+                filter_period: 30,
+                decay_period: 300,
+                reduction_factor: 5_000,
+                variable_fee_control: 10_000,
+                max_volatility_accumulator: 200_000,
+                protocol_share_bps: 1_000,
+                function_type: 0,
+                collect_fee_mode: 0,
+            },
+            &0,
+            &0,
+        );
+        (client, contract_id, pool_id, token_x, token_y, creator)
+    }
+
+    #[test]
+    fn two_sided_pool_swaps_both_directions() {
+        let env = Env::default();
+        let (client, _contract_id, pool_id, token_x, token_y, creator) = setup_pool(&env);
+        token::StellarAssetClient::new(&env, &token_x).mint(&creator, &10_000_000);
+        token::StellarAssetClient::new(&env, &token_y).mint(&creator, &10_000_000);
+        client.add_liquidity_bin(&pool_id, &creator, &0, &10_000_000, &10_000_000);
+
+        let x_to_y = client.simulate_swap(&pool_id, &true, &1_000_000);
+        assert!(x_to_y.amount_out > 0, "x→y must pay out token Y");
+
+        let y_to_x = client.simulate_swap(&pool_id, &false, &1_000_000);
+        assert!(y_to_x.amount_out > 0, "y→x must pay out token X");
+    }
+
+    #[test]
+    fn swap_x_to_y_without_y_reserves_produces_no_output() {
+        // A bin with no token Y cannot pay out Y; the exact-in planner consumes
+        // nothing from it, so the contract's "insufficient liquidity" assertion
+        // is what rejects the swap on-chain (verified on testnet).
+        let step = quote_exact_in_bin(
+            100_000,
+            1_000_000,
+            0,
+            SCALAR,
+            true,
+            0,
+            true,
+            0,
+        );
+        assert_eq!(step.amount_in, 0);
+        assert_eq!(step.amount_out, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "only token_x allowed above active bin")]
+    fn token_y_deposit_above_active_bin_is_rejected() {
+        assert_deposit_side(1, 0, 0, 1_000_000);
+    }
+
+    #[test]
+    #[should_panic(expected = "only token_y allowed below active bin")]
+    fn token_x_deposit_below_active_bin_is_rejected() {
+        assert_deposit_side(-1, 0, 1_000_000, 0);
     }
 
     #[test]

@@ -23,7 +23,7 @@ import { MarketPriceChart } from "@/components/market-price-chart";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { WalletModal } from "@/components/wallet-modal";
 import { useWallet } from "@/contexts/wallet";
-import { LEGACY_USDC_SAC, TOKEN_X } from "@/lib/contracts";
+import { TOKEN_X, TOKEN_Y } from "@/lib/contracts";
 
 export default function PoolDetailPage() {
   const queryClient = useQueryClient();
@@ -65,8 +65,8 @@ export default function PoolDetailPage() {
   const isXlmUsdcPair =
     pool.tokenX.symbol === TOKEN_X.symbol &&
     (pool.tokenX.address === "native" || pool.tokenX.address === TOKEN_X.address) &&
-    pool.tokenY.symbol === "USDC" &&
-    pool.tokenY.address === LEGACY_USDC_SAC;
+    pool.tokenY.symbol === TOKEN_Y.symbol &&
+    pool.tokenY.address === TOKEN_Y.address;
   const binsForChart = bins ?? [];
   const positionsForPool = (walletPositions ?? []).filter((position) => position.poolId === pool.id);
   const activeBinPosition = positionsForPool.find((position) => (position.binId ?? position.binRangeLow) === pool.activeBinId);

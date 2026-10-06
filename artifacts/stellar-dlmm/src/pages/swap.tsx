@@ -18,8 +18,9 @@ import {
 import { useWallet } from "@/contexts/wallet";
 import { WalletModal } from "@/components/wallet-modal";
 import { useToast } from "@/hooks/use-toast";
-import { DEMO_POOL_TOKENS, DEFAULT_POOL_ID } from "@/lib/contracts";
+import { DEMO_POOL_TOKENS, DEFAULT_POOL_ID, TOKEN_X } from "@/lib/contracts";
 import { DLMM_V2_CONTRACT_ID } from "@/lib/contracts";
+import { USDC_ISSUER } from "@/lib/trustline";
 import { displayToStroops, stroopsToDisplay } from "@/lib/stellar";
 import {
   getOnChainSwapQuote,
@@ -62,7 +63,7 @@ export default function SwapPage() {
   const effectiveSlippage = customSlippage || slippage;
   const xToY = tokenInId === tokens[0].address;
 
-  const tokenInBalance = tokenIn ? getWalletTokenBalance(wallet, tokenIn.symbol) : null;
+  const tokenInBalance = tokenIn ? getWalletTokenBalance(wallet, tokenIn) : null;
 
   const recentSwapsPoolId = bestPoolId !== null ? `dlmm-${bestPoolId}` : DEFAULT_POOL_RECORD_ID;
   const { data: recentSwaps, isLoading: swapsLoading } = useGetPoolRecentSwaps(recentSwapsPoolId);
@@ -120,6 +121,7 @@ export default function SwapPage() {
         );
 
         let best: { poolId: number; quote: SwapQuote } | null = null;
+        const rejectedReasons: string[] = [];
         for (const r of results) {
           if (r.status === "fulfilled" && r.value.quote.amountOut > 0n) {
             const isBetter = swapMode === "exact-in"
@@ -128,6 +130,8 @@ export default function SwapPage() {
             if (!best || isBetter) {
               best = r.value;
             }
+          } else if (r.status === "rejected") {
+            rejectedReasons.push(r.reason instanceof Error ? r.reason.message : String(r.reason));
           }
         }
 
@@ -137,8 +141,13 @@ export default function SwapPage() {
         } else {
           setQuote(null);
           setBestPoolId(null);
+          const hasOutputReserve = candidatePoolIds.length > 0;
           setQuoteError(
-            `No ${tokenOut?.symbol ?? "output token"} reserves are available in the active pools. Single-sided deposits add only the deposited token; a swap needs real output reserves or an executable conversion route.`
+            hasOutputReserve
+              ? (rejectedReasons.length > 0
+                ? `Quote failed: ${rejectedReasons.join("; ")}`
+                : "Quote failed for the configured pool.")
+              : `No ${tokenOut?.symbol ?? "output token"} reserve is available for this direction. Use Create Position to add the other side or try the opposite swap.`
           );
         }
       } catch (err) {
@@ -525,11 +534,15 @@ export default function SwapPage() {
 // ---------------------------------------------------------------------------
 
 function getWalletTokenBalance(
-  wallet: { xlmBalance: string | null; tokenBalances: Array<{ asset: string; balance: string }> },
-  symbol: string
+  wallet: { xlmBalance: string | null; tokenBalances: Array<{ asset: string; issuer: string | null; balance: string }> },
+  token: { address: string; symbol: string }
 ): string | null {
-  if (symbol === "XLM") return wallet.xlmBalance;
-  const match = wallet.tokenBalances.find((b) => b.asset === symbol);
+  if (token.address === TOKEN_X.address || token.address === "native") return wallet.xlmBalance;
+  // Classic-backed SAC balances expose asset code + issuer on Horizon; match both
+  // so a same-symbol token from another issuer is never mistaken for the pool asset.
+  const match = wallet.tokenBalances.find(
+    (b) => b.asset === token.symbol && b.issuer === USDC_ISSUER
+  );
   return match ? match.balance : null;
 }
 

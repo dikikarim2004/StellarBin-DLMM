@@ -445,15 +445,12 @@ stellar contract asset deploy \
   --source admin \
   --network testnet
 
-# Legacy USDC Testnet classic issuer account (used for trustlines):
-# GA5SH5Q6GUB5J3TNQ55I3B7FEOQJQTRJRD3OKNYRGEE323U3BYGLVAQO
-# Legacy USDC Stellar Asset Contract (used by pool 0):
-# CCTKVL3VAWCBY64NVXSQI7AMESCWXOWGGICYNZUTBSIKYXVEWFIBPD7N
-# Current DLMM V2 Testnet registry:
-# CCV3NLI6MRZ267E3DBVSLIO2UPNPLEHN7H6MYGQDH36OYN3IOXJBBSWG
-# For Soroban pool calls use the USDC SAC contract address (C...), not its
-# classic issuer account (G...):
+# Active DLMM V2 Testnet registry:
+# CBDH7LWCS4JOTA5EWXQISZGFE3CIUUYILYTPLS7Y5L3JDPV7MSLSTAKP
+# USDC Soroban Testnet token used by pool 0 (call this C... address):
 # CDYZE3XQZA2UYUTYEEVLOKSYDD44CQZ6LYJIKQEDIUYBXNVSNXEQVGEG
+# Its classic issuer account (used for trustlines, not contract calls):
+# GABZWK2YLPOGBEOZT6VOCID6ROSSZGPSLAEPCTWIBGAJDHISO6DFKYYZ
 ```
 
 ### 9.2 Inisialisasi Contract dan Pool
@@ -770,18 +767,22 @@ VAULT_CONTRACT_ID=CXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 |---|---|---|---|
 | `initialize` | `admin` | — | Inisialisasi contract registry satu kali |
 | `create_pool` | `creator, token_x, token_y, bin_step_bps, fee_config, active_bin_id, activation_ts` | `u64` | Membuat pool dengan fee, function type, dan collect-fee mode eksplisit |
-| `add_liquidity_bin` | `caller, bin_id, amount_x, amount_y` | — | Tambah likuiditas ke bin tertentu |
-| `remove_liquidity_bin` | `caller, bin_id` | — | Tarik semua likuiditas dari bin |
+| `list_pools` | — | `Vec<u64>` | Semua pool_id yang pernah dibuat |
+| `add_liquidity_bin` | `pool_id, caller, bin_id, amount_x, amount_y` | — | Setor ke satu bin; di atas aktif hanya X, di bawah aktif hanya Y, di aktif boleh keduanya |
+| `add_liquidity_bins` | `pool_id, caller, bin_ids, amounts_x, amounts_y` | — | Batch: setor banyak bin dalam satu transaksi; validasi sisi sama per bin |
+| `remove_liquidity_bin` | `pool_id, caller, bin_id` | — | Tarik seluruh posisi caller di bin |
 | `swap_exact_in_bin` | `pool_id, caller, x_to_y, amount_in, min_amount_out` | `SwapResult` | Exact-input; gagal jika input tidak dapat digunakan seluruhnya |
 | `swap_exact_out_bin` | `pool_id, caller, x_to_y, amount_out, max_amount_in` | `SwapExactOutResult` | Exact-output dengan input/slippage guard |
 | `simulate_swap` | `pool_id, x_to_y, amount_in` | `SwapResult` | Read-only exact-input quote |
 | `simulate_swap_exact_out` | `pool_id, x_to_y, amount_out` | `SwapExactOutResult` | Read-only exact-output quote |
 | `claim_fee` | `pool_id, caller, bin_id` | `(i128, i128)` | Claim fee LP terpisah dari liquidity principal |
-| `get_active_bin` | — | `i32` | ID bin aktif saat ini |
-| `get_bin_reserves` | `bin_id` | `BinReserves` | Reserve token X & Y di bin |
+| `get_active_bin` | `pool_id` | `i32` | ID bin aktif saat ini |
+| `get_bin_reserves` | `pool_id, bin_id` | `BinReserves` | Reserve token X & Y di bin |
+| `get_bins` | `pool_id` | `Vec<BinInfo>` | Semua bin yang berisi likuiditas |
+| `get_positions` | `pool_id, user` | `Vec<PositionInfo>` | Semua posisi LP user pada pool |
 | `get_bin_array` | `pool_id, array_index` | `BinArray` | Baca 70 bin berurutan |
 | `get_bin_array_indices` | `pool_id` | `Vec<i32>` | Array yang pernah diinisialisasi |
-| `get_config` | — | `PoolConfig` | Konfigurasi pool lengkap |
+| `get_config` | `pool_id` | `PoolConfig` | Konfigurasi pool lengkap |
 
 ### Math (`stellar-dlmm-math`)
 

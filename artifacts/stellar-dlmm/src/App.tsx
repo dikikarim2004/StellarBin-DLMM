@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Switch, Route, Router as WouterRouter, Link, useLocation } from "wouter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -14,6 +14,8 @@ import PositionsPage from "@/pages/positions";
 import AnalyticsPage from "@/pages/analytics";
 import { WalletProvider } from "@/contexts/wallet";
 import { WalletModal, HeaderWalletButton } from "@/components/wallet-modal";
+import { getPoolConfig } from "@/lib/dlmm-client";
+import { DEFAULT_POOL_ID, TOKEN_X, TOKEN_Y } from "@/lib/contracts";
 
 const queryClient = new QueryClient();
 
@@ -165,10 +167,45 @@ function MobileTabs() {
   );
 }
 
+/** Compares the on-chain pool config with the env-configured tokens; warns on drift. */
+function ConfigWarning() {
+  const [mismatch, setMismatch] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getPoolConfig(DEFAULT_POOL_ID)
+      .then((config) => {
+        if (cancelled) return;
+        if (config.tokenX !== TOKEN_X.address || config.tokenY !== TOKEN_Y.address) {
+          const message =
+            `Pool ${DEFAULT_POOL_ID} on-chain uses ${config.tokenX} / ${config.tokenY}, ` +
+            `but this build is configured for ${TOKEN_X.address} / ${TOKEN_Y.address}. ` +
+            `Update the VITE_TOKEN_* env values to match the deployed pool.`;
+          console.warn("[config]", message);
+          setMismatch(message);
+        }
+      })
+      .catch(() => {
+        // Read-only check; a failed lookup should never break the app shell.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (!mismatch) return null;
+  return (
+    <div className="border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-[11px] text-amber-200">
+      {mismatch}
+    </div>
+  );
+}
+
 function Layout({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-[100dvh] bg-background text-foreground">
       <Header />
+      <ConfigWarning />
       <main>
         <div className="w-full px-3 py-5 sm:px-6 sm:py-6 lg:px-8">
           {children}

@@ -32,6 +32,8 @@ export type WalletType = "freighter" | "albedo";
 
 export interface TokenBalance {
   asset: string;
+  /** Classic asset issuer (G...) for credit assets; null for native/unknown. */
+  issuer: string | null;
   balance: string;
 }
 
@@ -75,13 +77,18 @@ async function fetchBalances(
     const balances: Array<{
       asset_type: string;
       asset_code?: string;
+      asset_issuer?: string;
       balance: string;
     }> = data.balances ?? [];
     const native = balances.find((b) => b.asset_type === "native");
     const xlm = native ? parseFloat(native.balance).toFixed(4) : "0.0000";
     const tokens: TokenBalance[] = balances
       .filter((b) => b.asset_type !== "native")
-      .map((b) => ({ asset: b.asset_code ?? "UNKNOWN", balance: b.balance }));
+      .map((b) => ({
+        asset: b.asset_code ?? "UNKNOWN",
+        issuer: b.asset_issuer ?? null,
+        balance: b.balance,
+      }));
     return { xlm, tokens };
   } catch {
     return { xlm: "—", tokens: [] };

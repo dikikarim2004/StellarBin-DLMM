@@ -23,7 +23,7 @@ const NETWORK_PASSPHRASE = Networks.TESTNET;
 
 // Classic issuer of the USDC SAC; trustlines use the issuer's G... address.
 export const USDC_ISSUER =
-  import.meta.env.VITE_USDC_ISSUER ?? "GA5SH5Q6GUB5J3TNQ55I3B7FEOQJQTRJRD3OKNYRGEE323U3BYGLVAQO";
+  import.meta.env.VITE_USDC_ISSUER ?? "GABZWK2YLPOGBEOZT6VOCID6ROSSZGPSLAEPCTWIBGAJDHISO6DFKYYZ";
 
 export const USDC_ASSET = new Asset(TOKEN_Y.symbol, USDC_ISSUER);
 

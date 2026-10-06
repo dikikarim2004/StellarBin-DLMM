@@ -36,7 +36,4 @@ export const TOKEN_Y = {
   symbol: import.meta.env.VITE_TOKEN_Y_SYMBOL ?? "USDC",
 };
 
-export const LEGACY_USDC_SAC =
-  "CCTKVL3VAWCBY64NVXSQI7AMESCWXOWGGICYNZUTBSIKYXVEWFIBPD7N";
-
 export const DEMO_POOL_TOKENS = [TOKEN_X, TOKEN_Y];

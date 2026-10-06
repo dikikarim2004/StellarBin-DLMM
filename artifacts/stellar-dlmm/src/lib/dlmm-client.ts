@@ -315,6 +315,33 @@ export async function submitSignedExactOutSwap(
   return decodeSwapExactOutResult(getResult.returnValue);
 }
 
+/** Read-only `get_config` for a pool — returns its on-chain token addresses. */
+export async function getPoolConfig(
+  poolId: number = DEFAULT_POOL_ID
+): Promise<{ tokenX: string; tokenY: string }> {
+  const rpcServer = createRpcServer(STELLAR_NETWORK);
+  const account = await rpcServer.getAccount(QUOTE_SOURCE_ACCOUNT);
+  const contract = new Contract(DLMM_CONTRACT_ID);
+
+  const tx = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: NETWORK_CONFIG[STELLAR_NETWORK].networkPassphrase,
+  })
+    .addOperation(contract.call("get_config", u64ToScVal(poolId)))
+    .setTimeout(30)
+    .build();
+
+  const sim = await rpcServer.simulateTransaction(tx);
+  if (rpc.Api.isSimulationError(sim)) {
+    throw new Error(`get_config simulation failed: ${sim.error}`);
+  }
+  if (!sim.result) {
+    throw new Error("get_config returned no result");
+  }
+  const config = scValToNative(sim.result.retval) as { token_x: string; token_y: string };
+  return { tokenX: config.token_x, tokenY: config.token_y };
+}
+
 export function toAddressScVal(address: string) {
   return Address.fromString(address).toScVal();
 }
@@ -350,6 +377,47 @@ export async function buildAddLiquidityTransaction(
       )
     )
     .setTimeout(60)
+    .build();
+
+  return rpcServer.prepareTransaction(tx);
+}
+
+/**
+ * Builds a prepared batch `add_liquidity_bins` transaction covering multiple
+ * bins in a single contract call (one wallet signature, one fee).
+ */
+export async function buildAddLiquidityBinsTransaction(
+  callerAddress: string,
+  binIds: number[],
+  amountsX: bigint[],
+  amountsY: bigint[],
+  poolId: number = DEFAULT_POOL_ID
+) {
+  const rpcServer = createRpcServer(STELLAR_NETWORK);
+  const account = await rpcServer.getAccount(callerAddress);
+  const contract = new Contract(DLMM_CONTRACT_ID);
+
+  const tx = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: NETWORK_CONFIG[STELLAR_NETWORK].networkPassphrase,
+  })
+    .addOperation(
+      contract.call(
+        "add_liquidity_bins",
+        u64ToScVal(poolId),
+        addressToScVal(callerAddress),
+        nativeToScVal(binIds, { type: "i32" }),
+        nativeToScVal(
+          amountsX.map((v) => v.toString()),
+          { type: "i128" }
+        ),
+        nativeToScVal(
+          amountsY.map((v) => v.toString()),
+          { type: "i128" }
+        )
+      )
+    )
+    .setTimeout(120)
     .build();
 
   return rpcServer.prepareTransaction(tx);

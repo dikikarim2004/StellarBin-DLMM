@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
 import { getListPoolsQueryKey } from "@workspace/api-client-react";
-import { Horizon } from "@stellar/stellar-sdk";
+import { Horizon, Asset, Networks } from "@stellar/stellar-sdk";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -32,7 +32,7 @@ import {
 import { useWallet } from "@/contexts/wallet";
 import { WalletModal } from "@/components/wallet-modal";
 import { useToast } from "@/hooks/use-toast";
-import { DLMM_V2_CONTRACT_ID, TOKEN_X, TOKEN_Y } from "@/lib/contracts";
+import { DLMM_V2_CONTRACT_ID, TOKEN_X, TOKEN_Y, STELLAR_NETWORK } from "@/lib/contracts";
 import { getSorobanTokenMetadata, type SorobanTokenMetadata } from "@/lib/dlmm-client";
 import {
   buildCreatePoolTransaction,
@@ -115,9 +115,47 @@ function TokenPicker({
 }) {
   const [open, setOpen] = useState(false);
   const [customInput, setCustomInput] = useState("");
+  const [search, setSearch] = useState("");
+  const [dexResults, setDexResults] = useState<KnownToken[]>([]);
+  const [dexSearching, setDexSearching] = useState(false);
   const [tokenMetadata, setTokenMetadata] = useState<SorobanTokenMetadata | null>(null);
   const [metadataLoading, setMetadataLoading] = useState(false);
   const [metadataError, setMetadataError] = useState<string | null>(null);
+
+  // Search classic Stellar assets on Horizon by ticker, resolve each to its SAC contract address.
+  useEffect(() => {
+    const q = search.trim();
+    if (q.length < 2) {
+      setDexResults([]);
+      return;
+    }
+    let cancelled = false;
+    setDexSearching(true);
+    const timer = setTimeout(async () => {
+      try {
+        const server = new Horizon.Server(HORIZON_URL);
+        const res = await server.assets().forCode(q.toUpperCase()).limit(10).call();
+        if (cancelled) return;
+        const found: KnownToken[] = res.records
+          .filter((r) => r.asset_issuer)
+          .map((r) => ({
+            symbol: `${r.asset_code}:${r.asset_issuer.slice(0, 4)}…`,
+            address: new Asset(r.asset_code, r.asset_issuer).contractId(
+              STELLAR_NETWORK === "mainnet" ? Networks.PUBLIC : Networks.TESTNET
+            ),
+          }));
+        setDexResults(found);
+      } catch {
+        if (!cancelled) setDexResults([]);
+      } finally {
+        if (!cancelled) setDexSearching(false);
+      }
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [search]);
 
   const selectedToken = KNOWN_TOKENS.find((t) => t.address === value);
   const isCustom = !selectedToken && value.length > 0;
@@ -187,10 +225,32 @@ function TokenPicker({
           </Button>
         </PopoverTrigger>
         <PopoverContent className="w-72 p-0" align="start">
-          <Command>
-            <CommandInput placeholder="Search token…" />
+          <Command shouldFilter={false}>
+            <CommandInput placeholder="Search token…" onValueChange={setSearch} />
             <CommandList>
               <CommandEmpty>No token found.</CommandEmpty>
+              {dexSearching && (
+                <div className="py-2 px-3 text-xs text-muted-foreground flex items-center gap-2">
+                  <Loader2 className="h-3 w-3 animate-spin" /> Searching Stellar DEX…
+                </div>
+              )}
+              {dexResults.length > 0 && (
+                <CommandGroup heading="Stellar DEX assets">
+                  {dexResults.map((token) => (
+                    <CommandItem
+                      key={token.address}
+                      value={token.symbol}
+                      onSelect={() => {
+                        setCustomInput("");
+                        onChange(token.address);
+                        setOpen(false);
+                      }}
+                    >
+                      <span className="font-mono text-xs">{token.symbol}</span>
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              )}
               <CommandGroup heading="Available tokens">
                 {KNOWN_TOKENS.map((token) => {
                   const isDisabled = token.address === disabledAddress;

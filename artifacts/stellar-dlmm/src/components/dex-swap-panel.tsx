@@ -1,70 +1,137 @@
 // Stellar native DEX swap panel: pick a destination token, auto-quote, then swap.
 import { useEffect, useRef, useState } from "react";
+import { Asset, Horizon } from "@stellar/stellar-sdk";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { ArrowDown, Loader2 } from "lucide-react";
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
+  Command,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import { ArrowDown, Check, ChevronsUpDown, Loader2 } from "lucide-react";
 import { useWallet } from "@/contexts/wallet";
 import { useToast } from "@/hooks/use-toast";
 import { USDC_ISSUER } from "@/lib/trustline";
-import { TOKEN_Y } from "@/lib/contracts";
+import { STELLAR_NETWORK } from "@/lib/contracts";
 import {
   getDexQuote,
   buildDexSwapTransaction,
   submitDexTransaction,
   xlmAsset,
-  usdcAsset,
   type DexQuote,
 } from "@/lib/sdex";
 
-// Classic Stellar DEX destination assets available for XLM path payments.
-const DEX_DEST_TOKENS = [{ code: TOKEN_Y.symbol, issuer: USDC_ISSUER }];
+interface DexDestinationToken {
+  code: string;
+  issuer: string;
+}
+
+const HORIZON_URL =
+  STELLAR_NETWORK === "mainnet"
+    ? "https://horizon.stellar.org"
+    : "https://horizon-testnet.stellar.org";
+const DEFAULT_DEST_TOKENS: DexDestinationToken[] = [
+  { code: "USDC", issuer: USDC_ISSUER },
+];
+
+function tokenKey(token: DexDestinationToken): string {
+  return `${token.code}:${token.issuer}`;
+}
 
 export function DexSwapPanel() {
   const wallet = useWallet();
   const { toast } = useToast();
   const [amountIn, setAmountIn] = useState("");
-  const [destCode, setDestCode] = useState(DEX_DEST_TOKENS[0].code);
+  const [dest, setDest] = useState(DEFAULT_DEST_TOKENS[0]);
+  const [destPickerOpen, setDestPickerOpen] = useState(false);
+  const [destSearch, setDestSearch] = useState("");
+  const [destResults, setDestResults] = useState<DexDestinationToken[]>([]);
+  const [destSearching, setDestSearching] = useState(false);
+  const [destSearchError, setDestSearchError] = useState<string | null>(null);
   const [quote, setQuote] = useState<DexQuote | null>(null);
   const [quoting, setQuoting] = useState(false);
   const [quoteError, setQuoteError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const dest = DEX_DEST_TOKENS.find((t) => t.code === destCode) ?? DEX_DEST_TOKENS[0];
+  useEffect(() => {
+    const query = destSearch.trim();
+    setDestResults([]);
+    setDestSearchError(null);
+    if (query.length < 2) {
+      setDestSearching(false);
+      return;
+    }
+
+    let cancelled = false;
+    setDestSearching(true);
+    const timer = setTimeout(async () => {
+      try {
+        const server = new Horizon.Server(HORIZON_URL);
+        const response = await server.assets().forCode(query.toUpperCase()).limit(10).call();
+        if (cancelled) return;
+        const found = response.records
+          .filter((record) => record.asset_issuer && record.asset_code)
+          .map((record) => ({
+            code: record.asset_code,
+            issuer: record.asset_issuer,
+          }));
+        setDestResults(found);
+      } catch (error) {
+        if (!cancelled) {
+          setDestSearchError(
+            error instanceof Error ? error.message : "Unable to search Stellar DEX assets."
+          );
+        }
+      } finally {
+        if (!cancelled) setDestSearching(false);
+      }
+    }, 400);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [destSearch]);
 
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
+    setQuoting(false);
     setQuote(null);
     setQuoteError(null);
     const amt = amountIn.trim();
     if (!amt || Number(amt) <= 0) return;
+    let cancelled = false;
     debounceRef.current = setTimeout(async () => {
       setQuoting(true);
       try {
-        const q = await getDexQuote(xlmAsset(), amt, usdcAsset(dest.issuer));
+        const q = await getDexQuote(xlmAsset(), amt, new Asset(dest.code, dest.issuer));
+        if (cancelled) return;
         if (!q) {
           setQuoteError("No path found on Stellar DEX");
         } else {
           setQuote(q);
         }
       } catch (e) {
+        if (cancelled) return;
         setQuoteError(e instanceof Error ? e.message : "Quote failed");
       } finally {
-        setQuoting(false);
+        if (!cancelled) setQuoting(false);
       }
     }, 500);
     return () => {
+      cancelled = true;
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [amountIn, dest.issuer]);
+  }, [amountIn, dest.code, dest.issuer]);
 
   async function handleSwap() {
     if (!wallet.connected || !wallet.address) {
@@ -78,7 +145,7 @@ export function DexSwapPanel() {
         wallet.address,
         xlmAsset(),
         amountIn.trim(),
-        usdcAsset(dest.issuer),
+        new Asset(dest.code, dest.issuer),
         quote.destinationAmount,
         quote.path
       );
@@ -139,18 +206,82 @@ export function DexSwapPanel() {
               quote?.destinationAmount ?? "0.00"
             )}
           </div>
-          <Select value={destCode} onValueChange={setDestCode}>
-            <SelectTrigger className="w-28" data-testid="select-dex-dest-token">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {DEX_DEST_TOKENS.map((t) => (
-                <SelectItem key={t.code} value={t.code}>
-                  {t.code}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <Popover open={destPickerOpen} onOpenChange={setDestPickerOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                variant="outline"
+                role="combobox"
+                aria-expanded={destPickerOpen}
+                className="w-28 justify-between"
+                data-testid="select-dex-dest-token"
+              >
+                <span className="truncate">{dest.code}</span>
+                <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-64 p-0">
+              <Command shouldFilter={false}>
+                <CommandInput
+                  placeholder="Search Stellar DEX ticker…"
+                  onValueChange={setDestSearch}
+                />
+                <CommandList>
+                  {destSearch.trim().length < 2 && (
+                    <div className="px-3 py-2 text-xs text-muted-foreground">
+                      Enter at least 2 characters to search.
+                    </div>
+                  )}
+                  {destSearching && (
+                    <div className="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground">
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      Searching Stellar DEX…
+                    </div>
+                  )}
+                  {destSearchError && (
+                    <div className="px-3 py-2 text-xs text-destructive">{destSearchError}</div>
+                  )}
+                  {destSearch.trim().length >= 2 &&
+                    !destSearching &&
+                    !destSearchError &&
+                    destResults.length === 0 && (
+                      <div className="px-3 py-2 text-xs text-muted-foreground">
+                        No assets found.
+                      </div>
+                    )}
+                  <CommandGroup heading="Stellar DEX assets">
+                    {[...DEFAULT_DEST_TOKENS, dest, ...destResults]
+                      .filter(
+                        (token, index, tokens) =>
+                          tokens.findIndex(
+                            (candidate) => tokenKey(candidate) === tokenKey(token)
+                          ) === index
+                      )
+                      .map((token) => (
+                        <CommandItem
+                          key={tokenKey(token)}
+                          value={tokenKey(token)}
+                          onSelect={() => {
+                            setDest(token);
+                            setDestSearch("");
+                            setDestPickerOpen(false);
+                          }}
+                        >
+                          <Check
+                            className={`mr-2 h-4 w-4 ${
+                              tokenKey(dest) === tokenKey(token) ? "opacity-100" : "opacity-0"
+                            }`}
+                          />
+                          <span className="font-mono text-xs">{token.code}</span>
+                          <span className="ml-auto text-xs text-muted-foreground">
+                            {token.issuer.slice(0, 4)}…{token.issuer.slice(-4)}
+                          </span>
+                        </CommandItem>
+                      ))}
+                  </CommandGroup>
+                </CommandList>
+              </Command>
+            </PopoverContent>
+          </Popover>
         </div>
         {rate !== null && (
           <p className="text-xs text-muted-foreground">

@@ -599,9 +599,9 @@ export default function CreatePoolPage() {
           <Info className="w-3.5 h-3.5 mt-0.5 shrink-0" />
           <span>
             Any token with a Stellar Asset Contract (SAC) address can be used —
-            not just XLM and USDC. To get a SAC address for a new token, run:{" "}
+            not just XLM and USDC. To get a SAC address for a new token, 
             <span className="font-mono text-foreground">
-              stellar contract asset deploy --asset CODE:ISSUER --network testnet
+              type the token's ticker name in Token Y
             </span>
           </span>
         </div>

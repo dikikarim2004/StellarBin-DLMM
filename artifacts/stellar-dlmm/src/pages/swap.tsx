@@ -290,7 +290,7 @@ export default function SwapPage() {
         </Card>
       )}
 
-      <div className="inline-flex border border-border rounded-md p-1" role="group" aria-label="Swap venue">
+      <div className="flex w-fit border border-border rounded-md p-1" role="group" aria-label="Swap venue">
         {(["dlmm", "dex"] as const).map((v) => (
           <button
             key={v}

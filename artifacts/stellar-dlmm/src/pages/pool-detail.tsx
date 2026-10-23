@@ -12,6 +12,7 @@ import {
   useGetUserPositions,
 } from "@workspace/api-client-react";
 import type { Bin, Position, PositionEvent } from "@workspace/api-client-react";
+import { Horizon } from "@stellar/stellar-sdk";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -24,6 +25,13 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { WalletModal } from "@/components/wallet-modal";
 import { useWallet } from "@/contexts/wallet";
 import { TOKEN_X, TOKEN_Y } from "@/lib/contracts";
+import { STELLAR_NETWORK } from "@/lib/contracts";
+import { getClassicAssetContractId } from "@/lib/classic-asset";
+
+const HORIZON_URL =
+  STELLAR_NETWORK === "mainnet"
+    ? "https://horizon.stellar.org"
+    : "https://horizon-testnet.stellar.org";
 
 export default function PoolDetailPage() {
   const queryClient = useQueryClient();
@@ -35,6 +43,7 @@ export default function PoolDetailPage() {
   const [selectedTab, setSelectedTab] = useState<"positions" | "bins" | "history">("positions");
   const [selectedPosition, setSelectedPosition] = useState<Position | null>(null);
   const [walletModalOpen, setWalletModalOpen] = useState(false);
+  const [tokenYClassicIssuer, setTokenYClassicIssuer] = useState<string | null>(null);
   const wallet = useWallet();
 
   const { data: pool, isLoading: poolLoading } = useGetPool(poolId, { query: { enabled: !!poolId, queryKey: getGetPoolQueryKey(poolId) } });
@@ -54,6 +63,39 @@ export default function PoolDetailPage() {
       refetchInterval: 30_000,
     },
   });
+
+  useEffect(() => {
+    setTokenYClassicIssuer(null);
+    if (!pool || pool.tokenY.address === "native") return;
+
+    let cancelled = false;
+    const server = new Horizon.Server(HORIZON_URL);
+    server
+      .assets()
+      .forCode(pool.tokenY.symbol)
+      .limit(200)
+      .call()
+      .then((response) => {
+        if (cancelled) return;
+        const matchingAsset = response.records.find(
+          (asset) =>
+            asset.asset_issuer &&
+            asset.asset_code &&
+            getClassicAssetContractId(asset.asset_code, asset.asset_issuer) ===
+              pool.tokenY.address
+        );
+        setTokenYClassicIssuer(matchingAsset?.asset_issuer ?? null);
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          console.error("Unable to resolve Token Y Stellar DEX issuer.", error);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [pool?.tokenY.address, pool?.tokenY.symbol]);
 
   if (poolLoading) {
     return <div className="space-y-6"><Skeleton className="h-12 w-64" /><Skeleton className="h-64 w-full" /></div>;
@@ -150,13 +192,26 @@ export default function PoolDetailPage() {
               {pool.lpFeeBps !== undefined && <DetailRow label="LP fee share" value={`${(pool.lpFeeBps / 100).toFixed(1)}%`} />}
               {pool.protocolFeeBps !== undefined && <DetailRow label="Protocol share" value={`${(pool.protocolFeeBps / 100).toFixed(1)}%`} />}
               <div className="border-t border-border/60 pt-2">
-                <dt className="text-muted-foreground">{pool.tokenY.symbol} contract address</dt>
+                <dt className="text-muted-foreground">{pool.tokenY.symbol} Stellar DEX issuer</dt>
                 <dd
                   className="mt-1 break-all font-mono text-[10px] leading-relaxed text-foreground"
-                  data-testid="text-token-y-contract-address"
+                  data-testid="text-token-y-dex-issuer"
                 >
-                  {pool.tokenY.address}
+                  {tokenYClassicIssuer ?? "No matching classic Stellar DEX asset found"}
                 </dd>
+                {tokenYClassicIssuer && (
+                  <>
+                    <dt className="mt-2 text-muted-foreground">
+                      {pool.tokenY.symbol} SAC contract address
+                    </dt>
+                    <dd
+                      className="mt-1 break-all font-mono text-[10px] leading-relaxed text-foreground"
+                      data-testid="text-token-y-sac-address"
+                    >
+                      {pool.tokenY.address}
+                    </dd>
+                  </>
+                )}
               </div>
             </dl>
           </section>

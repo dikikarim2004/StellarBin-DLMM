@@ -21,6 +21,8 @@ import { useWallet } from "@/contexts/wallet";
 import { useToast } from "@/hooks/use-toast";
 import { USDC_ISSUER } from "@/lib/trustline";
 import { STELLAR_NETWORK } from "@/lib/contracts";
+import { listPools } from "@workspace/api-client-react";
+import { getClassicAssetContractId } from "@/lib/classic-asset";
 import {
   getDexQuote,
   buildDexSwapTransaction,
@@ -32,6 +34,7 @@ import {
 interface DexDestinationToken {
   code: string;
   issuer: string;
+  sacAddress?: string;
 }
 
 const HORIZON_URL =
@@ -44,6 +47,18 @@ const DEFAULT_DEST_TOKENS: DexDestinationToken[] = [
 
 function tokenKey(token: DexDestinationToken): string {
   return `${token.code}:${token.issuer}`;
+}
+
+function mergeDestinationTokens(tokens: DexDestinationToken[]): DexDestinationToken[] {
+  const uniqueTokens = new Map<string, DexDestinationToken>();
+  for (const token of tokens) {
+    const key = tokenKey(token);
+    const current = uniqueTokens.get(key);
+    if (!current || (!current.sacAddress && token.sacAddress)) {
+      uniqueTokens.set(key, token);
+    }
+  }
+  return [...uniqueTokens.values()];
 }
 
 export function DexSwapPanel() {
@@ -76,15 +91,28 @@ export function DexSwapPanel() {
     const timer = setTimeout(async () => {
       try {
         const server = new Horizon.Server(HORIZON_URL);
-        const response = await server.assets().forCode(query.toUpperCase()).limit(10).call();
+        const [response, pools] = await Promise.all([
+          server.assets().forCode(query.toUpperCase()).limit(200).call(),
+          listPools(),
+        ]);
         if (cancelled) return;
         const found = response.records
           .filter((record) => record.asset_issuer && record.asset_code)
           .map((record) => ({
             code: record.asset_code,
             issuer: record.asset_issuer,
+            sacAddress: pools
+              .flatMap((pool) => [pool.tokenX, pool.tokenY])
+              .find(
+                (token) =>
+                  token.symbol.toUpperCase() === record.asset_code.toUpperCase() &&
+                  token.address ===
+                    getClassicAssetContractId(record.asset_code, record.asset_issuer)
+              )?.address,
           }));
-        setDestResults(found);
+        setDestResults(
+          found.sort((first, second) => Number(!!second.sacAddress) - Number(!!first.sacAddress))
+        );
       } catch (error) {
         if (!cancelled) {
           setDestSearchError(
@@ -219,7 +247,7 @@ export function DexSwapPanel() {
                 <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
               </Button>
             </PopoverTrigger>
-            <PopoverContent align="end" className="w-64 p-0">
+            <PopoverContent align="end" className="w-80 p-0">
               <Command shouldFilter={false}>
                 <CommandInput
                   placeholder="Search Stellar DEX ticker…"
@@ -249,17 +277,11 @@ export function DexSwapPanel() {
                       </div>
                     )}
                   <CommandGroup heading="Stellar DEX assets">
-                    {[...DEFAULT_DEST_TOKENS, dest, ...destResults]
-                      .filter(
-                        (token, index, tokens) =>
-                          tokens.findIndex(
-                            (candidate) => tokenKey(candidate) === tokenKey(token)
-                          ) === index
-                      )
+                    {mergeDestinationTokens([...DEFAULT_DEST_TOKENS, dest, ...destResults])
                       .map((token) => (
                         <CommandItem
                           key={tokenKey(token)}
-                          value={tokenKey(token)}
+                          value={`${token.code} ${token.issuer} ${token.sacAddress ?? ""}`}
                           onSelect={() => {
                             setDest(token);
                             setDestSearch("");
@@ -271,9 +293,18 @@ export function DexSwapPanel() {
                               tokenKey(dest) === tokenKey(token) ? "opacity-100" : "opacity-0"
                             }`}
                           />
-                          <span className="font-mono text-xs">{token.code}</span>
-                          <span className="ml-auto text-xs text-muted-foreground">
-                            {token.issuer.slice(0, 4)}…{token.issuer.slice(-4)}
+                          <span className="min-w-0 flex-1">
+                            <span className="flex items-center justify-between gap-2">
+                              <span className="font-mono text-xs">{token.code}</span>
+                              <span className="text-[10px] text-muted-foreground">
+                                {token.issuer.slice(0, 4)}…{token.issuer.slice(-4)}
+                              </span>
+                            </span>
+                            {token.sacAddress && (
+                              <span className="mt-0.5 block break-all font-mono text-[9px] leading-3 text-muted-foreground">
+                                SAC: {token.sacAddress}
+                              </span>
+                            )}
                           </span>
                         </CommandItem>
                       ))}

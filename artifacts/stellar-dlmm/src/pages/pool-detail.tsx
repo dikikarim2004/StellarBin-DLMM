@@ -149,6 +149,15 @@ export default function PoolDetailPage() {
               <DetailRow label="Swap fee" value={`${feePercent}%`} />
               {pool.lpFeeBps !== undefined && <DetailRow label="LP fee share" value={`${(pool.lpFeeBps / 100).toFixed(1)}%`} />}
               {pool.protocolFeeBps !== undefined && <DetailRow label="Protocol share" value={`${(pool.protocolFeeBps / 100).toFixed(1)}%`} />}
+              <div className="border-t border-border/60 pt-2">
+                <dt className="text-muted-foreground">{pool.tokenY.symbol} contract address</dt>
+                <dd
+                  className="mt-1 break-all font-mono text-[10px] leading-relaxed text-foreground"
+                  data-testid="text-token-y-contract-address"
+                >
+                  {pool.tokenY.address}
+                </dd>
+              </div>
             </dl>
           </section>
         </aside>

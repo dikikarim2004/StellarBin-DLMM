@@ -5,11 +5,25 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import {
   ArrowDownUp,
   Settings,
   AlertTriangle,
   CheckCircle2,
-  ChevronDown,
+  Check,
+  ChevronsUpDown,
   Loader2,
   ArrowDownRight,
   ArrowUpRight,
@@ -42,6 +56,8 @@ export default function SwapPage() {
   const wallet = useWallet();
   const { toast } = useToast();
 
+  const [poolCatalog, setPoolCatalog] = useState<Awaited<ReturnType<typeof listPools>>>([]);
+  const [poolCatalogError, setPoolCatalogError] = useState<string | null>(null);
   const [tokenInId, setTokenInId] = useState(tokens[0].address);
   const [tokenOutId, setTokenOutId] = useState(tokens[1].address);
   const [swapMode, setSwapMode] = useState<SwapMode>("exact-in");
@@ -55,18 +71,55 @@ export default function SwapPage() {
   const [quotePending, setQuotePending] = useState(false);
   const [quoteError, setQuoteError] = useState<string | null>(null);
   const [bestPoolId, setBestPoolId] = useState<number | null>(null);
+  const [bestXToY, setBestXToY] = useState<boolean | null>(null);
   const [poolsTriedCount, setPoolsTriedCount] = useState(0);
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const tokenIn = tokens.find((t) => t.address === tokenInId);
-  const tokenOut = tokens.find((t) => t.address === tokenOutId);
+  useEffect(() => {
+    let cancelled = false;
+    listPools()
+      .then((pools) => {
+        if (!cancelled) {
+          setPoolCatalog(pools.filter((pool) => pool.category === "dlmm"));
+          setPoolCatalogError(null);
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setPoolCatalogError(
+            error instanceof Error ? error.message : "Unable to load DLMM token list."
+          );
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const tokensByAddress = new Map<string, (typeof tokens)[number]>();
+  for (const token of tokens) tokensByAddress.set(token.address, token);
+  for (const pool of poolCatalog) {
+    for (const token of [pool.tokenX, pool.tokenY]) {
+      const existing = [...tokensByAddress.values()].find((candidate) =>
+        sameTokenAddress(candidate.address, token.address)
+      );
+      if (!existing) tokensByAddress.set(token.address, token);
+    }
+  }
+  const allTokens = [...tokensByAddress.values()];
+  const tokenIn = allTokens.find((t) => sameTokenAddress(t.address, tokenInId));
+  const tokenOut = allTokens.find((t) => sameTokenAddress(t.address, tokenOutId));
+  const tokenInChoices = getPairedTokens(poolCatalog, tokenOutId, allTokens);
+  const tokenOutChoices = getPairedTokens(poolCatalog, tokenInId, allTokens);
   const effectiveSlippage = customSlippage || slippage;
-  const xToY = tokenInId === tokens[0].address;
 
   const tokenInBalance = tokenIn ? getWalletTokenBalance(wallet, tokenIn) : null;
 
   const recentSwapsPoolId = bestPoolId !== null ? `dlmm-${bestPoolId}` : DEFAULT_POOL_RECORD_ID;
+  const recentSwapsPool = poolCatalog.find(
+    (pool) => pool.dlmmPoolId === (bestPoolId ?? DEFAULT_POOL_ID)
+  );
   const { data: recentSwaps, isLoading: swapsLoading } = useGetPoolRecentSwaps(recentSwapsPoolId);
 
   // Debounced REAL on-chain quote — fetches fresh pool list then tries all DLMM pools in parallel
@@ -75,6 +128,7 @@ export default function SwapPage() {
     setQuote(null);
     setQuoteError(null);
     setBestPoolId(null);
+    setBestXToY(null);
     setPoolsTriedCount(0);
     if (!tokenInId || !tokenOutId || !amountIn || parseFloat(amountIn) <= 0) return;
 
@@ -85,31 +139,41 @@ export default function SwapPage() {
 
         // Fetch fresh pool list inside the effect so routing never uses stale cache
         const allPools = await listPools();
-        const candidatePoolIds = allPools
+        const candidatePools = allPools
           .filter(
             (p) =>
               p.category === "dlmm" &&
               p.dlmmPoolId !== undefined &&
-              // For x→y (sell XLM, get USDC) we need USDC in pool (reserveY)
-              // For y→x (sell USDC, get XLM) we need XLM in pool (reserveX)
-              (xToY ? (p.reserveY ?? 0) > 0.0001 : (p.reserveX ?? 0) > 0.0001)
+              (
+                (sameTokenAddress(p.tokenX.address, tokenInId) &&
+                  sameTokenAddress(p.tokenY.address, tokenOutId) &&
+                  (p.reserveY ?? 0) > 0.0001) ||
+                (sameTokenAddress(p.tokenY.address, tokenInId) &&
+                  sameTokenAddress(p.tokenX.address, tokenOutId) &&
+                  (p.reserveX ?? 0) > 0.0001)
+              )
           )
-          .map((p) => p.dlmmPoolId as number);
-
-        // If no pool has the required reserve, still try DEFAULT_POOL_ID for a meaningful error
-        const poolsToTry = candidatePoolIds.length > 0 ? candidatePoolIds : [DEFAULT_POOL_ID];
-        setPoolsTriedCount(poolsToTry.length);
+          .map((pool) => ({
+            poolId: pool.dlmmPoolId as number,
+            xToY: sameTokenAddress(pool.tokenX.address, tokenInId),
+          }));
+        setPoolsTriedCount(candidatePools.length);
+        if (candidatePools.length === 0) {
+          setQuoteError(`No DLMM pool is available for ${tokenIn?.symbol ?? "input token"} / ${tokenOut?.symbol ?? "output token"}.`);
+          return;
+        }
 
         // Try all candidate pools in parallel and optimize for the selected mode.
         const results = await Promise.allSettled(
-          poolsToTry.map(async (poolId) => {
+          candidatePools.map(async ({ poolId, xToY: poolDirection }) => {
             if (swapMode === "exact-in") {
-              const q = await getOnChainSwapQuote(xToY, amountSpecified, poolId);
-              return { poolId, quote: q };
+              const q = await getOnChainSwapQuote(poolDirection, amountSpecified, poolId);
+              return { poolId, xToY: poolDirection, quote: q };
             }
-            const q = await getOnChainExactOutQuote(xToY, amountSpecified, poolId);
+            const q = await getOnChainExactOutQuote(poolDirection, amountSpecified, poolId);
             return {
               poolId,
+              xToY: poolDirection,
               quote: {
                 amountIn: q.amountIn,
                 amountOut: q.amountOut,
@@ -121,7 +185,7 @@ export default function SwapPage() {
           })
         );
 
-        let best: { poolId: number; quote: SwapQuote } | null = null;
+        let best: { poolId: number; xToY: boolean; quote: SwapQuote } | null = null;
         const rejectedReasons: string[] = [];
         for (const r of results) {
           if (r.status === "fulfilled" && r.value.quote.amountOut > 0n) {
@@ -139,16 +203,15 @@ export default function SwapPage() {
         if (best) {
           setQuote(best.quote);
           setBestPoolId(best.poolId);
+          setBestXToY(best.xToY);
         } else {
           setQuote(null);
           setBestPoolId(null);
-          const hasOutputReserve = candidatePoolIds.length > 0;
+          setBestXToY(null);
           setQuoteError(
-            hasOutputReserve
-              ? (rejectedReasons.length > 0
-                ? `Quote failed: ${rejectedReasons.join("; ")}`
-                : "Quote failed for the configured pool.")
-              : `No ${tokenOut?.symbol ?? "output token"} reserve is available for this direction. Use Create Position to add the other side or try the opposite swap.`
+            rejectedReasons.length > 0
+              ? `Quote failed: ${rejectedReasons.join("; ")}`
+              : "Quote failed for the selected DLMM pool pair."
           );
         }
       } catch (err) {
@@ -160,7 +223,7 @@ export default function SwapPage() {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [tokenInId, tokenOutId, amountIn, xToY, swapMode]);
+  }, [tokenInId, tokenOutId, amountIn, swapMode]);
 
   function handleMaxAmount() {
     if (!tokenInBalance) return;
@@ -177,6 +240,7 @@ export default function SwapPage() {
     );
     setQuote(null);
     setBestPoolId(null);
+    setBestXToY(null);
   }
 
   async function handleConfirmSwap() {
@@ -195,7 +259,7 @@ export default function SwapPage() {
         const amountInStroops = displayToStroops(amountIn);
         const minAmountOut = quote.amountOut - (quote.amountOut * slippageBps) / 10_000n;
         const prepared = await buildSwapTransaction(
-          wallet.address, xToY, amountInStroops, minAmountOut, routedPoolId
+          wallet.address, bestXToY ?? true, amountInStroops, minAmountOut, routedPoolId
         );
         const signedXdr = await wallet.signTransaction(prepared.toXDR());
         const result = await submitSignedSwap(signedXdr);
@@ -205,7 +269,7 @@ export default function SwapPage() {
         const amountOutStroops = displayToStroops(amountIn);
         const maxAmountIn = quote.amountIn + (quote.amountIn * slippageBps) / 10_000n;
         const prepared = await buildExactOutSwapTransaction(
-          wallet.address, xToY, amountOutStroops, maxAmountIn, routedPoolId
+          wallet.address, bestXToY ?? true, amountOutStroops, maxAmountIn, routedPoolId
         );
         const signedXdr = await wallet.signTransaction(prepared.toXDR());
         const result = await submitSignedExactOutSwap(signedXdr);
@@ -305,6 +369,12 @@ export default function SwapPage() {
         ))}
       </div>
 
+      {swapVenue === "dlmm" && poolCatalogError && (
+        <p className="text-xs text-destructive" role="alert">
+          Unable to load additional DLMM tokens: {poolCatalogError}
+        </p>
+      )}
+
       {swapVenue === "dex" && <DexSwapPanel />}
 
       {swapVenue === "dlmm" && (
@@ -341,7 +411,7 @@ export default function SwapPage() {
               data-testid="input-amount-in"
             />
             <TokenSelect
-              tokens={tokens}
+              tokens={swapMode === "exact-in" ? tokenInChoices : tokenOutChoices}
               value={swapMode === "exact-in" ? tokenInId : tokenOutId}
               exclude={swapMode === "exact-in" ? tokenOutId : tokenInId}
               onChange={swapMode === "exact-in" ? setTokenInId : setTokenOutId}
@@ -401,7 +471,7 @@ export default function SwapPage() {
               )}
             </div>
             <TokenSelect
-              tokens={tokens}
+              tokens={swapMode === "exact-in" ? tokenOutChoices : tokenInChoices}
               value={swapMode === "exact-in" ? tokenOutId : tokenInId}
               exclude={swapMode === "exact-in" ? tokenInId : tokenOutId}
               onChange={swapMode === "exact-in" ? setTokenOutId : setTokenInId}
@@ -514,8 +584,12 @@ export default function SwapPage() {
         ) : recentSwaps && recentSwaps.length > 0 ? (
           <div className="space-y-1.5">
             {recentSwaps.map((swap) => {
-              const inSymbol = swap.xToY ? tokens[0].symbol : tokens[1].symbol;
-              const outSymbol = swap.xToY ? tokens[1].symbol : tokens[0].symbol;
+              const inSymbol = swap.xToY
+                ? recentSwapsPool?.tokenX.symbol ?? tokens[0].symbol
+                : recentSwapsPool?.tokenY.symbol ?? tokens[1].symbol;
+              const outSymbol = swap.xToY
+                ? recentSwapsPool?.tokenY.symbol ?? tokens[1].symbol
+                : recentSwapsPool?.tokenX.symbol ?? tokens[0].symbol;
               return (
                 <div
                   key={swap.txHash}
@@ -600,24 +674,100 @@ function TokenSelect({
   onChange: (v: string) => void;
   testId: string;
 }) {
+  const [open, setOpen] = useState(false);
+  const selected = tokens.find((token) => sameTokenAddress(token.address, value));
   return (
-    <div className="relative">
-      <select
-        className="appearance-none bg-secondary border border-border rounded-lg pl-3 pr-7 py-2 font-semibold text-sm cursor-pointer focus:outline-none focus:ring-1 focus:ring-primary"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        data-testid={testId}
-      >
-        <option value="">Select</option>
-        {tokens
-          .filter((t) => t.address !== exclude)
-          .map((t) => (
-            <option key={t.address} value={t.address}>
-              {t.symbol}
-            </option>
-          ))}
-      </select>
-      <ChevronDown className="absolute right-1.5 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground pointer-events-none" />
-    </div>
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="secondary"
+          role="combobox"
+          aria-expanded={open}
+          aria-label={`Select ${testId === "select-token-in" ? "input" : "output"} token`}
+          className="h-auto min-h-10 max-w-56 justify-between gap-3 px-3 py-2 text-left"
+          data-testid={testId}
+        >
+          <span className="min-w-0">
+            <span className="block truncate font-semibold text-sm">
+              {selected?.symbol ?? "Select"}
+            </span>
+            {selected && (
+              <span className="block max-w-40 truncate font-mono text-[10px] leading-3 text-muted-foreground">
+                {selected.address}
+              </span>
+            )}
+          </span>
+          <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-80 p-0">
+        <Command>
+          <CommandInput placeholder="Search ticker or contract address…" />
+          <CommandList>
+            <CommandEmpty>No paired DLMM tokens found.</CommandEmpty>
+            <CommandGroup heading="DLMM pool tokens">
+              {tokens
+                .filter((token) => !sameTokenAddress(token.address, exclude))
+                .map((token) => (
+                  <CommandItem
+                    key={token.address}
+                    value={`${token.symbol} ${token.address}`}
+                    onSelect={() => {
+                      onChange(token.address);
+                      setOpen(false);
+                    }}
+                  >
+                    <Check
+                      className={`mr-2 h-4 w-4 shrink-0 ${
+                        sameTokenAddress(token.address, value) ? "opacity-100" : "opacity-0"
+                      }`}
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="block font-semibold">{token.symbol}</span>
+                      <span className="block truncate font-mono text-[10px] text-muted-foreground">
+                        {token.address}
+                      </span>
+                    </span>
+                  </CommandItem>
+                ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function sameTokenAddress(first: string, second: string): boolean {
+  if (first === second) return true;
+  const firstIsNative = first === "native" || first === TOKEN_X.address;
+  const secondIsNative = second === "native" || second === TOKEN_X.address;
+  return firstIsNative && secondIsNative;
+}
+
+function getPairedTokens(
+  pools: Awaited<ReturnType<typeof listPools>>,
+  pairedAddress: string,
+  allTokens: Array<{ address: string; symbol: string }>
+): Array<{ address: string; symbol: string }> {
+  if (pools.length === 0) {
+    return allTokens.filter((token) => !sameTokenAddress(token.address, pairedAddress));
+  }
+  const pairAddresses = pools
+    .filter(
+      (pool) =>
+        sameTokenAddress(pool.tokenX.address, pairedAddress) ||
+        sameTokenAddress(pool.tokenY.address, pairedAddress)
+    )
+    .map((pool) =>
+      sameTokenAddress(pool.tokenX.address, pairedAddress)
+        ? pool.tokenY.address
+        : pool.tokenX.address
+    );
+  return allTokens.filter(
+    (token, index, tokens) =>
+      pairAddresses.some((address) => sameTokenAddress(address, token.address)) &&
+      !sameTokenAddress(token.address, pairedAddress) &&
+      tokens.findIndex((candidate) => sameTokenAddress(candidate.address, token.address)) === index
   );
 }

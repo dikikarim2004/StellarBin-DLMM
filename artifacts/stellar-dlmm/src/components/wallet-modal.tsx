@@ -105,7 +105,7 @@ export function WalletModal({ open, onOpenChange }: WalletModalProps) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md bg-card border-border" data-testid="wallet-modal">
+      <DialogContent className="grid-cols-1 min-w-0 sm:max-w-md bg-card border-border" data-testid="wallet-modal">
         {wallet.connected ? (
           <ConnectedView
             wallet={wallet}
@@ -242,7 +242,7 @@ function SelectWalletView({
         </div>
       )}
 
-      <div className="space-y-3 mt-2">
+      <div className="w-full min-w-0 space-y-3 mt-2">
         {WALLETS.map((w) => {
           const isVarial = w.id === "varial";
           const isConnecting = wallet.connecting && selected === w.id;
@@ -255,7 +255,7 @@ function SelectWalletView({
                 onConnect(w.id);
               }}
               disabled={wallet.connecting}
-              className="w-full flex items-center gap-4 p-4 rounded-lg border border-border bg-secondary/40 hover:bg-secondary/70 hover:border-primary/40 transition-colors text-left disabled:opacity-60"
+              className="box-border w-full min-w-0 flex items-center gap-4 p-4 rounded-lg border border-border bg-secondary/40 hover:bg-secondary/70 hover:border-primary/40 transition-colors text-left disabled:opacity-60"
               data-testid={`button-connect-${w.id}`}
             >
               <span className="text-2xl">{w.icon}</span>

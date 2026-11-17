@@ -1,14 +1,37 @@
 import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { useListPools, useGetProtocolSummary, getListPoolsQueryKey } from "@workspace/api-client-react";
+import { useListPools, useGetProtocolSummary, useGetPoolRecentSwaps, getListPoolsQueryKey, getGetPoolRecentSwapsQueryKey } from "@workspace/api-client-react";
 import type { Pool } from "@workspace/api-client-react";
 import { ArrowDown, ArrowUpRight, Search, SlidersHorizontal, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { STELLAR_NETWORK } from "@/lib/contracts";
 
 type CategoryFilter = "all" | "dlmm" | "amm";
 type PoolSort = "tvl" | "price" | "pair";
+
+interface HorizonPoolTrade {
+  ledger_close_time: string;
+  base_amount: string;
+  base_asset_type: string;
+  base_asset_code?: string;
+  base_asset_issuer?: string;
+  counter_amount: string;
+  counter_asset_type: string;
+  counter_asset_code?: string;
+  counter_asset_issuer?: string;
+}
+
+interface PoolTrendPoint {
+  timestamp: number;
+  price: number;
+}
+
+const HORIZON_URL = STELLAR_NETWORK === "mainnet"
+  ? "https://horizon.stellar.org"
+  : "https://horizon-testnet.stellar.org";
 
 const FILTERS: { key: CategoryFilter; label: string }[] = [
   { key: "all", label: "All pools" },
@@ -169,6 +192,7 @@ export default function DiscoverPage() {
               <thead className="bg-secondary/35 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
                 <tr>
                   <th className="px-5 py-3 text-left">Pool</th>
+                  <th className="px-4 py-3 text-center">Price trend</th>
                   <th className="px-4 py-3 text-right">Price</th>
                   <th className="px-4 py-3 text-right">TVL</th>
                   <th className="px-4 py-3 text-right">Volume 24h</th>
@@ -207,6 +231,9 @@ export default function DiscoverPage() {
                           </div>
                         </div>
                       </div>
+                    </td>
+                    <td className="px-4 py-3.5 text-center">
+                      <PoolPriceTrend pool={pool} />
                     </td>
                     <td className="px-4 py-3.5 text-right font-mono tabular-nums">
                       {pool.currentPrice == null ? "—" : `${pool.currentPrice.toLocaleString("en", { maximumFractionDigits: 6 })} ${pool.tokenY.symbol}`}
@@ -252,4 +279,135 @@ function TokenLogo({ url, symbol }: { url?: string; symbol: string }) {
     );
   }
   return <img src={url} alt={symbol} className="h-8 w-8 rounded-full border-2 border-card bg-secondary object-cover" onError={() => setFailed(true)} />;
+}
+
+function PoolPriceTrend({ pool }: { pool: Pool }) {
+  const dlmmQuery = useGetPoolRecentSwaps(pool.id, {
+    query: {
+      enabled: pool.category === "dlmm",
+      staleTime: 60_000,
+      queryKey: getGetPoolRecentSwapsQueryKey(pool.id),
+    },
+  });
+  const dexQuery = useQuery({
+    queryKey: ["pool-price-trend", pool.id],
+    queryFn: () => fetchDexPoolPrices(pool),
+    enabled: pool.category === "amm",
+    staleTime: 60_000,
+  });
+
+  const points = useMemo(() => {
+    if (pool.category === "amm") return dexQuery.data ?? [];
+    return (dlmmQuery.data ?? [])
+      .map((swap) => {
+        const amountIn = Number(BigInt(swap.amountIn)) / 10 ** 7;
+        const amountOut = Number(BigInt(swap.amountOut)) / 10 ** 7;
+        return {
+          timestamp: Date.parse(swap.timestamp),
+          price: swap.xToY ? amountOut / amountIn : amountIn / amountOut,
+        };
+      })
+      .filter((point) => Number.isFinite(point.timestamp) && Number.isFinite(point.price) && point.price > 0)
+      .sort((first, second) => first.timestamp - second.timestamp);
+  }, [pool.category, dlmmQuery.data, dexQuery.data]);
+
+  const isLoading = pool.category === "amm" ? dexQuery.isLoading : dlmmQuery.isLoading;
+  const isError = pool.category === "amm" ? dexQuery.isError : dlmmQuery.isError;
+  if (isLoading) {
+    return <Skeleton className="mx-auto h-6 w-20" data-testid={`sparkline-loading-${pool.id}`} />;
+  }
+  if (isError) {
+    return <span className="text-xs text-muted-foreground" title="Price history could not be loaded">—</span>;
+  }
+  if (points.length < 2) {
+    return <span className="text-xs text-muted-foreground" title="Not enough observed trades for a price trend">—</span>;
+  }
+
+  const prices = points.map((point) => point.price);
+  const minimum = Math.min(...prices);
+  const maximum = Math.max(...prices);
+  const spread = maximum - minimum;
+  const padding = spread === 0 ? Math.max(maximum * 0.01, 0.000001) : spread * 0.08;
+  const range = spread + padding * 2;
+  const coordinates = prices.map((price, index) => {
+    const x = (index / (prices.length - 1)) * 100;
+    const y = 22 - ((price - minimum + padding) / range) * 18;
+    return `${x.toFixed(2)},${y.toFixed(2)}`;
+  }).join(" ");
+  const firstPrice = prices[0]!;
+  const lastPrice = prices[prices.length - 1]!;
+  const trend = lastPrice > firstPrice ? "up" : lastPrice < firstPrice ? "down" : "flat";
+  const stroke = trend === "up" ? "hsl(158 64% 48%)" : trend === "down" ? "hsl(350 80% 60%)" : "hsl(var(--muted-foreground))";
+  const source = pool.category === "dlmm" ? "Recent DLMM swap executions" : "Recent trades in this Stellar DEX pool";
+
+  return (
+    <svg
+      className="mx-auto block h-6 w-20"
+      viewBox="0 0 100 24"
+      preserveAspectRatio="none"
+      role="img"
+      aria-label={`${pairName(pool)} ${trend} price trend from ${points.length} observed trades`}
+      data-testid={`sparkline-${pool.id}`}
+    >
+      <title>{`${source}: ${firstPrice.toPrecision(6)} to ${lastPrice.toPrecision(6)} ${pool.tokenY.symbol} per ${pool.tokenX.symbol}`}</title>
+      <polyline points={coordinates} fill="none" stroke={stroke} strokeWidth="1.8" vectorEffect="non-scaling-stroke" />
+    </svg>
+  );
+}
+
+async function fetchDexPoolPrices(pool: Pool): Promise<PoolTrendPoint[]> {
+  const url = `${HORIZON_URL}/liquidity_pools/${encodeURIComponent(pool.id)}/trades?limit=20&order=desc`;
+  const response = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+  if (!response.ok) throw new Error(`Horizon pool trades request failed: HTTP ${response.status}`);
+  const data = (await response.json()) as { _embedded?: { records?: HorizonPoolTrade[] } };
+  const points: PoolTrendPoint[] = [];
+
+  for (const trade of data._embedded?.records ?? []) {
+    const baseAmount = Number(trade.base_amount);
+    const counterAmount = Number(trade.counter_amount);
+    const timestamp = Date.parse(trade.ledger_close_time);
+    if (!(baseAmount > 0) || !(counterAmount > 0) || !Number.isFinite(timestamp)) continue;
+
+    const baseIsTokenX = matchesPoolToken(
+      trade.base_asset_type,
+      trade.base_asset_code,
+      trade.base_asset_issuer,
+      pool.tokenX,
+    );
+    const baseIsTokenY = matchesPoolToken(
+      trade.base_asset_type,
+      trade.base_asset_code,
+      trade.base_asset_issuer,
+      pool.tokenY,
+    );
+    const counterIsTokenX = matchesPoolToken(
+      trade.counter_asset_type,
+      trade.counter_asset_code,
+      trade.counter_asset_issuer,
+      pool.tokenX,
+    );
+    const counterIsTokenY = matchesPoolToken(
+      trade.counter_asset_type,
+      trade.counter_asset_code,
+      trade.counter_asset_issuer,
+      pool.tokenY,
+    );
+
+    let price: number | null = null;
+    if (baseIsTokenX && counterIsTokenY) price = counterAmount / baseAmount;
+    else if (baseIsTokenY && counterIsTokenX) price = baseAmount / counterAmount;
+    if (price !== null && Number.isFinite(price) && price > 0) points.push({ timestamp, price });
+  }
+
+  return points.sort((first, second) => first.timestamp - second.timestamp);
+}
+
+function matchesPoolToken(
+  assetType: string,
+  assetCode: string | undefined,
+  assetIssuer: string | undefined,
+  token: Pool["tokenX"],
+): boolean {
+  if (token.address === "native") return assetType === "native";
+  return assetType !== "native" && assetCode === token.symbol && assetIssuer === token.address;
 }

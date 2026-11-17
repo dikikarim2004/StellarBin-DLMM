@@ -8,7 +8,7 @@
  *
  * Quotes are obtained via read-only simulation (no wallet required).
  * Mutating calls are built, simulated+assembled with `prepareTransaction`,
- * signed by the connected wallet (Freighter/Albedo), and submitted to the
+ * signed by the connected wallet (Varial/Albedo), and submitted to the
  * network — no mocked data anywhere in this path.
  */
 

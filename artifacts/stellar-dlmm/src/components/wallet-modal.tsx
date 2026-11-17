@@ -2,7 +2,7 @@
  * WalletModal — wallet selection dialog + connected state display
  *
  * Shows two connection options:
- *   • Freighter (browser extension)
+ *   • Varial (browser extension)
  *   • Albedo (web-based non-custodial)
  *
  * When connected, shows address, XLM balance, token balances, and
@@ -33,11 +33,11 @@ const WALLETS: {
   installUrl?: string;
 }[] = [
   {
-    id: "freighter",
-    name: "Freighter",
-    description: "Browser extension — best for frequent traders",
+    id: "varial",
+    name: "Varial",
+    description: "Stellar browser wallet — best for frequent traders",
     icon: "🚀",
-    installUrl: "https://www.freighter.app/",
+    installUrl: "https://docs.varialwallet.com/extension-varial-sdk/installation.md",
   },
   {
     id: "albedo",
@@ -90,10 +90,17 @@ export function WalletModal({ open, onOpenChange }: WalletModalProps) {
     });
   }
 
-  function handleDisconnect() {
-    wallet.disconnect();
-    onOpenChange(false);
-    toast({ title: "Wallet disconnected" });
+  async function handleDisconnect() {
+    try {
+      await wallet.disconnect();
+      onOpenChange(false);
+      toast({ title: "Wallet disconnected" });
+    } catch (err) {
+      toast({
+        title: "Disconnect failed",
+        description: err instanceof Error ? err.message : "Could not disconnect wallet.",
+      });
+    }
   }
 
   return (
@@ -204,7 +211,7 @@ function SelectWalletView({
   onConnect: (w: WalletType) => void;
 }) {
   const [selected, setSelected] = useState<WalletType | null>(null);
-  const freighterInstalled = wallet.isFreighterInstalled;
+  const varialInstalled = wallet.isVarialInstalled;
 
   return (
     <>
@@ -225,20 +232,19 @@ function SelectWalletView({
         </div>
       )}
 
-      {!freighterInstalled && isInsideIframe() && (
+      {!varialInstalled && isInsideIframe() && (
         <div className="flex items-start gap-2 bg-yellow-500/10 border border-yellow-500/30 text-yellow-500 rounded-md p-3 text-sm mt-2">
           <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
           <span>
-            Freighter isn't detected because this preview runs inside an embedded frame — browser
-            extensions can't inject into it. Open this app in its own browser tab to connect Freighter.
+            Varial isn't detected because this preview runs inside an embedded frame — browser
+            extensions can't inject into it. Open this app in its own browser tab to connect Varial.
           </span>
         </div>
       )}
 
       <div className="space-y-3 mt-2">
         {WALLETS.map((w) => {
-          const isFreighter = w.id === "freighter";
-          const notInstalled = isFreighter && !freighterInstalled;
+          const isVarial = w.id === "varial";
           const isConnecting = wallet.connecting && selected === w.id;
 
           return (
@@ -259,15 +265,15 @@ function SelectWalletView({
               </div>
               {isConnecting ? (
                 <Loader2 className="w-4 h-4 animate-spin text-muted-foreground shrink-0" />
-              ) : isFreighter ? (
+              ) : isVarial ? (
                 <span
                   className={`text-xs px-2 py-1 rounded-full shrink-0 ${
-                    freighterInstalled
+                    varialInstalled
                       ? "bg-green-500/15 text-green-400"
                       : "bg-secondary text-muted-foreground"
                   }`}
                 >
-                  {freighterInstalled ? "Detected" : "Not installed"}
+                  {varialInstalled ? "Detected" : "Not installed"}
                 </span>
               ) : null}
             </button>

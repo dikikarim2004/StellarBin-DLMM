@@ -327,12 +327,12 @@ importers:
       '@albedo-link/intent':
         specifier: ^0.13.0
         version: 0.13.0
-      '@stellar/freighter-api':
-        specifier: ^6.0.1
-        version: 6.0.1
       '@stellar/stellar-sdk':
         specifier: ^16.0.1
         version: 16.0.1
+      '@stellar/varial-sdk':
+        specifier: ^7.0.0
+        version: 7.0.0
     devDependencies:
       '@hookform/resolvers':
         specifier: ^3.10.0
@@ -2208,9 +2208,6 @@ packages:
     resolution: {integrity: sha512-tlqY9xq5ukxTUZBmoOp+m61cqwQD5pHJtFY3Mn8CA8ps6yghLH/Hw8UPdqg4OLmFW3IFlcXnQNmo/dh8HzXYIQ==}
     engines: {node: '>=18'}
 
-  '@stellar/freighter-api@6.0.1':
-    resolution: {integrity: sha512-eqwakEqSg+zoLuPpSbKyrX0pG8DQFzL/J5GtbfuMCmJI+h+oiC9pQ5C6QLc80xopZQKdGt8dUAFCmDMNdAG95w==}
-
   '@stellar/js-xdr@4.0.0':
     resolution: {integrity: sha512-+NmNa7Tk5BI5XFdy/6xGTqAN4J9a9KgCrCGhj2uEUTCBhLkch0M+QbKzNH8zEnejWe0p8w+0q5hUVX6L3OzoVA==}
     engines: {node: '>=20.0.0', pnpm: '>=9.0.0'}
@@ -2219,6 +2216,9 @@ packages:
     resolution: {integrity: sha512-bxKohaiyKVqoudRhbOOHeHhHIaeYV5Zab4rCjxhP4Ty1h1ozTLBOv8lWFnZz9ilBzXG8Bb7usQI3rlEcfvUynA==}
     engines: {node: '>=22.0.0'}
     hasBin: true
+
+  '@stellar/varial-sdk@7.0.0':
+    resolution: {integrity: sha512-lF56k2v1TjfARsdpJdCO5pP70lW2SSsm6VupbWFV6vHNy7bi9sOFWXvn30B+AvUqqpFiXTHwRaVQWXt+dR9XXA==}
 
   '@tabby_ai/hijri-converter@1.0.5':
     resolution: {integrity: sha512-r5bClKrcIusDoo049dSL8CawnHR6mRdDwhlQuIgZRNty68q0x8k3Lf1BtPAMxRf/GgnHBnIO4ujd3+GQdLWzxQ==}
@@ -3739,8 +3739,8 @@ packages:
     resolution: {integrity: sha512-BR7VvDCVHO+q2xBEWskxS6DJE1qRnb7DxzUrogb71CWoSficBxYsiAGd+Kl0mmq/MprG9yArRkyrQxTO6XjMzA==}
     hasBin: true
 
-  semver@7.7.1:
-    resolution: {integrity: sha512-hlq8tAfn0m/61p4BVRcPzIGr6LKiMwo4VM6dGi6pt4qcRkmNzTcWq6eCEjEh+qXjkMDvPlOFFSGwQjoEa6gyMA==}
+  semver@7.8.4:
+    resolution: {integrity: sha512-rUCObTnP32Q08R2uuIrt7r9PlEonuTmtuXYcW6s5kjdlj3xbnwe+21yXptAUYcMAABLkYYTtnmzb3w3EDZfueA==}
     engines: {node: '>=10'}
     hasBin: true
 
@@ -5487,11 +5487,6 @@ snapshots:
 
   '@sindresorhus/merge-streams@4.0.0': {}
 
-  '@stellar/freighter-api@6.0.1':
-    dependencies:
-      buffer: 6.0.3
-      semver: 7.7.1
-
   '@stellar/js-xdr@4.0.0': {}
 
   '@stellar/stellar-sdk@16.0.1':
@@ -5511,6 +5506,11 @@ snapshots:
     transitivePeerDependencies:
       - debug
       - supports-color
+
+  '@stellar/varial-sdk@7.0.0':
+    dependencies:
+      buffer: 6.0.3
+      semver: 7.8.4
 
   '@tabby_ai/hijri-converter@1.0.5': {}
 
@@ -6994,7 +6994,7 @@ snapshots:
 
   semver@6.3.1: {}
 
-  semver@7.7.1: {}
+  semver@7.8.4: {}
 
   send@1.2.1:
     dependencies:

@@ -12,7 +12,7 @@ StellarBin is a full-stack **DLMM (Dynamic Liquidity Market Maker)** protocol bu
 - **Dynamic fees** — Fee rates automatically increase during high-volatility periods and decay back to the base rate as trading activity normalizes, protecting LPs from toxic flow.
 - **Permissionless pool creation** — Anyone can create a Standard Pool (active immediately) or a Launch Pool (swaps gated until a specified activation time, anti-snipe protection).
 - **Real on-chain execution** — Swap quotes, liquidity operations, and pool creation all submit real signed transactions to the Stellar testnet via Soroban RPC.
-- **Wallet support** — Connect via Freighter or Albedo browser extensions to sign and submit transactions.
+- **Wallet support** — Connect via Varial or Albedo to sign and submit transactions.
 
 ---
 
@@ -209,8 +209,8 @@ stellarbin/
 
 ## Wallet Setup (Testnet)
 
-1. Install the [Freighter wallet extension](https://freighter.app) in your browser.
-2. Switch Freighter to **Testnet** mode.
+1. Install the [Varial wallet extension](https://docs.varialwallet.com/extension-varial-sdk/installation.md) in your browser.
+2. Switch Varial to **Testnet** mode.
 3. Fund your wallet using the [Stellar Testnet Friendbot](https://friendbot.stellar.org/?addr=YOUR_ADDRESS).
 4. Create a trustline and acquire the pool's actual USDC asset before opening a two-sided position. A single-sided XLM position does not create USDC reserves.
 

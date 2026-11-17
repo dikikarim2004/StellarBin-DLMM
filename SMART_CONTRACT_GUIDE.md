@@ -580,7 +580,7 @@ function useSwap() {
     // 4. Assemble transaksi dengan hasil simulasi
     const assembled = assembleTransaction(tx, sim).build();
 
-    // 5. Minta tanda tangan dari wallet (Freighter/Albedo)
+    // 5. Minta tanda tangan dari wallet (Varial/Albedo)
     const signedXdr = await wallet.signTransaction(assembled.toXDR());
 
     // 6. Submit ke jaringan
@@ -913,10 +913,12 @@ codegen-units = 1
 strip = "symbols"
 ```
 
-### Freighter tidak terdeteksi di browser
-Extension harus diinstall dan diizinkan untuk domain yang diakses. Cek dengan:
+### Varial tidak terdeteksi di browser
+Pastikan extension Varial terinstall dan buka aplikasi di tab browser sendiri, bukan di dalam embedded preview. SDK menyediakan pemeriksaan berikut:
 ```javascript
-console.log(typeof window.freighter); // harus "object"
+import { isConnected } from "@stellar/varial-sdk";
+
+console.log((await isConnected()).isConnected);
 ```
 
 ### Transaksi gagal dengan `tx_bad_seq`

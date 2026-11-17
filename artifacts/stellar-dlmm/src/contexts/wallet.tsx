@@ -2,7 +2,7 @@
  * WalletContext — Stellar wallet connection layer
  *
  * Wallets supported:
- *  1. Freighter  — browser extension via @stellar/freighter-api (official SDK)
+ *  1. Varial     — browser extension via @stellar/varial-sdk (official SDK)
  *  2. Albedo     — web popup wallet via @albedo-link/intent (official SDK)
  *
  * Balances fetched from Stellar Horizon Testnet REST API (no extra packages).
@@ -17,18 +17,19 @@ import {
   type ReactNode,
 } from "react";
 import {
+  disconnect as varialDisconnect,
   getAddress,
-  isConnected as freighterIsConnected,
+  isConnected as varialIsConnected,
   requestAccess,
-  signTransaction as freighterSignTransaction,
-} from "@stellar/freighter-api";
+  signTransaction as varialSignTransaction,
+} from "@stellar/varial-sdk";
 import albedo from "@albedo-link/intent";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-export type WalletType = "freighter" | "albedo";
+export type WalletType = "varial" | "albedo";
 
 export interface TokenBalance {
   asset: string;
@@ -51,10 +52,10 @@ export interface WalletState {
 
 export interface WalletContextValue extends WalletState {
   connect: (wallet: WalletType) => Promise<void>;
-  disconnect: () => void;
+  disconnect: () => Promise<void>;
   signTransaction: (xdr: string) => Promise<string>;
   refreshBalance: () => Promise<void>;
-  isFreighterInstalled: boolean;
+  isVarialInstalled: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -109,7 +110,7 @@ const STORAGE_KEY = "stellar_dlmm_wallet";
 
 interface PersistedWallet {
   address: string;
-  walletType: WalletType;
+  walletType: WalletType | "freighter";
 }
 
 const NETWORK_PASSPHRASE = {
@@ -129,12 +130,12 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     network: "testnet",
     error: null,
   });
-  const [isFreighterInstalled, setIsFreighterInstalled] = useState(false);
+  const [isVarialInstalled, setIsVarialInstalled] = useState(false);
 
-  // Detect Freighter on mount
+  // Detect Varial on mount
   useEffect(() => {
-    freighterIsConnected().then((res) => {
-      setIsFreighterInstalled(res.isConnected);
+    varialIsConnected().then((res) => {
+      setIsVarialInstalled(res.isConnected);
     });
   }, []);
 
@@ -169,14 +170,15 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return;
-      const { address, walletType } = JSON.parse(raw) as PersistedWallet;
+      const { address, walletType: savedWalletType } = JSON.parse(raw) as PersistedWallet;
+      const walletType = savedWalletType === "freighter" ? "varial" : savedWalletType;
       if (!address || !walletType) return;
 
-      if (walletType === "freighter") {
-        // Re-verify Freighter still has permission before restoring.
+      if (walletType === "varial") {
+        // Re-verify Varial still has permission before restoring.
         getAddress().then((res) => {
           if (res.address && !res.error) {
-            applyConnected(res.address, "freighter");
+            applyConnected(res.address, "varial");
           }
         });
       } else {
@@ -192,16 +194,22 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       try {
         let address: string;
 
-        if (walletType === "freighter") {
-          // requestAccess shows the Freighter permission dialog if needed.
+        if (walletType === "varial") {
+          const connection = await varialIsConnected();
+          setIsVarialInstalled(connection.isConnected);
+          if (!connection.isConnected) {
+            throw new Error("Varial is not installed in this browser.");
+          }
+
+          // requestAccess prompts the user to authorize this app if needed.
           const res = await requestAccess();
           if (res.error) {
             throw new Error(
-              typeof res.error === "string" ? res.error : "Freighter: access denied"
+              typeof res.error === "string" ? res.error : res.error.message
             );
           }
           if (!res.address) {
-            throw new Error("Freighter: no address returned. Make sure the extension is unlocked.");
+            throw new Error("Varial: no address returned. Make sure the extension is unlocked.");
           }
           address = res.address;
         } else {
@@ -228,7 +236,16 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     [applyConnected]
   );
 
-  const disconnect = useCallback(() => {
+  const disconnect = useCallback(async () => {
+    if (state.walletType === "varial") {
+      const res = await varialDisconnect();
+      if (res.error) {
+        throw new Error(
+          typeof res.error === "string" ? res.error : res.error.message
+        );
+      }
+    }
+
     setState({
       connected: false,
       connecting: false,
@@ -243,21 +260,21 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     try {
       localStorage.removeItem(STORAGE_KEY);
     } catch {}
-  }, []);
+  }, [state.walletType]);
 
   const signTransaction = useCallback(
     async (xdr: string): Promise<string> => {
       const { address, walletType, network } = state;
       if (!address || !walletType) throw new Error("Wallet not connected");
 
-      if (walletType === "freighter") {
-        const res = await freighterSignTransaction(xdr, {
+      if (walletType === "varial") {
+        const res = await varialSignTransaction(xdr, {
           networkPassphrase: NETWORK_PASSPHRASE[network],
           address,
         });
         if (res.error) {
           throw new Error(
-            typeof res.error === "string" ? res.error : "Freighter: signing failed"
+            typeof res.error === "string" ? res.error : res.error.message
           );
         }
         return res.signedTxXdr;
@@ -288,7 +305,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         disconnect,
         signTransaction,
         refreshBalance,
-        isFreighterInstalled,
+        isVarialInstalled,
       }}
     >
       {children}

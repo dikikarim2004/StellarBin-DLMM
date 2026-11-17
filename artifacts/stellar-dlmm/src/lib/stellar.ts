@@ -115,7 +115,7 @@ export interface InvokeParams {
  *
  * The returned transaction must be:
  * 1. Simulated via `rpcServer.simulateTransaction(tx)` to set the fee & auth.
- * 2. Signed by the caller's wallet (Freighter / Albedo).
+ * 2. Signed by the caller's wallet (Varial / Albedo).
  * 3. Submitted via `rpcServer.sendTransaction(signedTx)`.
  */
 export async function buildContractInvocation(

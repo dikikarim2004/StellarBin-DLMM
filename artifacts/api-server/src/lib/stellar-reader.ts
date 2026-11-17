@@ -178,6 +178,31 @@ function getRpc(): rpc.Server {
   return rpcServer;
 }
 
+async function getLatestLedgerSequence(): Promise<number> {
+  const response = await fetch(RPC_URL, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getLatestLedger" }),
+  });
+  if (!response.ok) {
+    throw new Error(`Soroban RPC getLatestLedger failed: HTTP ${response.status}`);
+  }
+
+  const result = (await response.json()) as {
+    result?: { sequence?: number };
+    error?: { message?: string };
+  };
+  if (result.error) {
+    throw new Error(result.error.message ?? "Soroban RPC getLatestLedger failed");
+  }
+
+  const sequence = result.result?.sequence;
+  if (typeof sequence !== "number" || !Number.isSafeInteger(sequence)) {
+    throw new Error("Soroban RPC returned an invalid latest ledger sequence");
+  }
+  return sequence;
+}
+
 async function simRead(fn: string, args: xdr.ScVal[] = []): Promise<unknown> {
   const server = getRpc();
   const account = await server.getAccount(SOURCE_ACCOUNT);
@@ -548,9 +573,10 @@ const RECENT_SWAP_LOOKBACK_LEDGERS = 9_000;
 
 async function readRecentSwaps(poolId: number): Promise<RecentSwapRecord[]> {
   const server = getRpc();
-  const latest = await server.getLatestLedger();
-  const startLedger = Math.max(1, latest.sequence - RECENT_SWAP_LOOKBACK_LEDGERS);
+  const latestSequence = await getLatestLedgerSequence();
+  const startLedger = Math.max(1, latestSequence - RECENT_SWAP_LOOKBACK_LEDGERS);
   const swapTopic = xdr.ScVal.scvSymbol("SWAP").toXDR("base64");
+  const swapOutTopic = xdr.ScVal.scvSymbol("SWAP_OUT").toXDR("base64");
 
   const response = await server.getEvents({
     startLedger,
@@ -558,7 +584,10 @@ async function readRecentSwaps(poolId: number): Promise<RecentSwapRecord[]> {
       {
         type: "contract",
         contractIds: [DLMM_CONTRACT_ID],
-        topics: [[swapTopic, "*", "*"]],
+        topics: [
+          [swapTopic, "*", "*"],
+          [swapOutTopic, "*", "*"],
+        ],
       },
     ],
     limit: 200,

@@ -28,6 +28,7 @@ import {
   ArrowDownRight,
   ArrowUpRight,
   Route,
+  ExternalLink,
 } from "lucide-react";
 import { useWallet } from "@/contexts/wallet";
 import { WalletModal } from "@/components/wallet-modal";
@@ -114,7 +115,11 @@ export default function SwapPage() {
   const recentSwapsPool = poolCatalog.find(
     (pool) => pool.dlmmPoolId === (bestPoolId ?? DEFAULT_POOL_ID)
   );
-  const { data: recentSwaps, isLoading: swapsLoading } = useGetPoolRecentSwaps(recentSwapsPoolId);
+  const {
+    data: recentSwaps,
+    isLoading: swapsLoading,
+    isError: swapsError,
+  } = useGetPoolRecentSwaps(recentSwapsPoolId);
 
   // Debounced REAL on-chain quote — fetches fresh pool list then tries all DLMM pools in parallel
   useEffect(() => {
@@ -519,6 +524,10 @@ export default function SwapPage() {
               <Skeleton key={i} className="h-11 w-full" />
             ))}
           </div>
+        ) : swapsError ? (
+          <p className="text-xs text-destructive px-1" role="alert">
+            Swap history could not be loaded. Please try again later.
+          </p>
         ) : recentSwaps && recentSwaps.length > 0 ? (
           <div className="space-y-1.5">
             {recentSwaps.map((swap) => {
@@ -529,10 +538,14 @@ export default function SwapPage() {
                 ? recentSwapsPool?.tokenY.symbol ?? tokens[1].symbol
                 : recentSwapsPool?.tokenX.symbol ?? tokens[0].symbol;
               return (
-                <div
+                <a
                   key={swap.txHash}
+                  href={`https://stellar.expert/explorer/testnet/tx/${swap.txHash}`}
+                  target="_blank"
+                  rel="noreferrer"
                   className="flex justify-between items-center px-3 py-2.5 rounded-md bg-card border border-border text-sm"
                   data-testid={`row-swap-${swap.txHash}`}
+                  aria-label={`View swap transaction ${swap.txHash} on Stellar Expert`}
                 >
                   <div className="flex items-center gap-2">
                     {swap.xToY ? (
@@ -549,7 +562,8 @@ export default function SwapPage() {
                     <span className="text-muted-foreground"> → </span>
                     {stroopsToDisplay(BigInt(swap.amountOut))} {outSymbol}
                   </span>
-                </div>
+                  <ExternalLink className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                </a>
               );
             })}
           </div>

@@ -1,261 +1,254 @@
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { useGetProtocolSummary, useListTransactions, useListPools, getPoolStats } from "@workspace/api-client-react";
+import { useGetMarketFlow, type MarketFlowAsset } from "@workspace/api-client-react";
+import { RefreshCw } from "lucide-react";
 import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { TrendingUp, TrendingDown } from "lucide-react";
-import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 
-interface HistoryPoint {
-  timestamp: string;
-  tvl: number;
-  volume: number;
-  fees: number;
+type VenueFilter = "all" | "dlmm" | "dex";
+type FlowSource = "dlmm" | "dex";
+
+interface FlowRow {
+  asset: MarketFlowAsset;
+  source: FlowSource;
+  records: number;
+  buy: bigint;
+  sell: bigint;
 }
 
-const TIME_RANGES = [
-  { label: "7D", days: 7 },
-  { label: "30D", days: 30 },
-  { label: "All", days: null },
-] as const;
-
-type TimeRangeLabel = (typeof TIME_RANGES)[number]["label"];
-
-function dayBucket(timestamp: string): string {
-  return timestamp.slice(0, 10);
-}
-
-function useProtocolHistory(poolIds: string[] | undefined) {
-  return useQuery({
-    queryKey: ["protocol-history", poolIds],
-    queryFn: async (): Promise<HistoryPoint[]> => {
-      const allStats = await Promise.all((poolIds ?? []).map((id) => getPoolStats(id)));
-      const byDay = new Map<string, HistoryPoint>();
-      for (const stats of allStats) {
-        for (const point of stats.data) {
-          const key = dayBucket(point.timestamp);
-          const existing = byDay.get(key);
-          if (existing) {
-            existing.tvl += point.tvl;
-            existing.volume += point.volume;
-            existing.fees += point.fees;
-          } else {
-            byDay.set(key, { timestamp: point.timestamp, tvl: point.tvl, volume: point.volume, fees: point.fees });
-          }
-        }
-      }
-      return Array.from(byDay.values()).sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-    },
-    enabled: !!poolIds && poolIds.length > 0,
-  });
-}
+const VENUES: { id: VenueFilter; label: string }[] = [
+  { id: "all", label: "All sources" },
+  { id: "dlmm", label: "StellarBin" },
+  { id: "dex", label: "Stellar DEX" },
+];
 
 export default function AnalyticsPage() {
-  const { data: summary, isLoading: summaryLoading } = useGetProtocolSummary();
-  const { data: transactions, isLoading: txLoading } = useListTransactions({ limit: 20 });
-  const { data: pools, isLoading: poolsLoading } = useListPools({});
-  const poolIds = pools?.map((p) => p.id);
-  const { data: history, isLoading: historyLoading } = useProtocolHistory(poolIds);
-  const [range, setRange] = useState<TimeRangeLabel>("30D");
+  const [venue, setVenue] = useState<VenueFilter>("all");
+  const [search, setSearch] = useState("");
+  const {
+    data: marketFlow,
+    isLoading,
+    isError,
+    isFetching,
+    refetch,
+  } = useGetMarketFlow();
 
-  const loadingCharts = poolsLoading || historyLoading;
-  const tvlChange = summary?.tvlChange24h ?? 0;
-  const volumeChange = summary?.volumeChange24h ?? 0;
+  const rows = useMemo(() => {
+    if (!marketFlow) return [];
+    const result: FlowRow[] = [];
+    const query = search.trim().toLowerCase();
+    for (const asset of marketFlow.assets) {
+      if (query && !`${asset.symbol} ${asset.address}`.toLowerCase().includes(query)) continue;
+      if (venue !== "dex" && asset.dlmmTrades > 0) {
+        result.push({
+          asset,
+          source: "dlmm",
+          records: asset.dlmmTrades,
+          buy: BigInt(asset.dlmmBuy),
+          sell: BigInt(asset.dlmmSell),
+        });
+      }
+      if (venue !== "dlmm" && asset.dexTrades > 0) {
+        result.push({
+          asset,
+          source: "dex",
+          records: asset.dexTrades,
+          buy: BigInt(asset.dexBuy),
+          sell: BigInt(asset.dexSell),
+        });
+      }
+    }
+    return result.sort((first, second) => second.records - first.records || first.asset.symbol.localeCompare(second.asset.symbol));
+  }, [marketFlow, search, venue]);
 
-  const filteredHistory = useMemo(() => {
-    if (!history) return history;
-    const days = TIME_RANGES.find((r) => r.label === range)?.days;
-    if (days == null) return history;
-    return history.slice(-days);
-  }, [history, range]);
+  const activeTokenCount = marketFlow?.assets.length ?? 0;
+  const sourceRecords = (source: FlowSource) =>
+    marketFlow?.[source].records.toLocaleString("en-US") ?? "0";
 
   return (
-    <div className="space-y-6">
-      <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">Protocol Analytics</h1>
-
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <Card className="p-4 bg-card border-border">
-          <div className="text-sm text-muted-foreground">Total TVL</div>
-          {summaryLoading ? <Skeleton className="h-8 w-24 mt-1" /> : (
-            <>
-              <div className="text-xl sm:text-2xl font-mono font-bold">${summary?.totalTvl.toLocaleString()}</div>
-              <ChangeBadge value={tvlChange} />
-            </>
-          )}
-        </Card>
-        <Card className="p-4 bg-card border-border">
-          <div className="text-sm text-muted-foreground">24h Volume</div>
-          {summaryLoading ? <Skeleton className="h-8 w-24 mt-1" /> : (
-            <>
-              <div className="text-xl sm:text-2xl font-mono font-bold">${summary?.totalVolume24h.toLocaleString()}</div>
-              <ChangeBadge value={volumeChange} />
-            </>
-          )}
-        </Card>
-        <Card className="p-4 bg-card border-border">
-          <div className="text-sm text-muted-foreground">24h Fees</div>
-          {summaryLoading ? <Skeleton className="h-8 w-24 mt-1" /> : <div className="text-xl sm:text-2xl font-mono font-bold">${summary?.totalFees24h.toLocaleString()}</div>}
-        </Card>
-        <Card className="p-4 bg-card border-border">
-          <div className="text-sm text-muted-foreground">Total Pools</div>
-          {summaryLoading ? <Skeleton className="h-8 w-24 mt-1" /> : <div className="text-xl sm:text-2xl font-mono font-bold">{summary?.totalPools}</div>}
-        </Card>
-      </div>
-
-      <div className="flex items-center justify-end">
-        <div className="inline-flex items-center rounded-lg border border-border bg-card p-1 gap-1">
-          {TIME_RANGES.map((r) => (
-            <button
-              key={r.label}
-              onClick={() => setRange(r.label)}
-              className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
-                range === r.label ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
-              }`}
-              data-testid={`button-range-${r.label.toLowerCase()}`}
-            >
-              {r.label}
-            </button>
-          ))}
+    <div className="space-y-6" data-testid="page-analytics">
+      <header className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Market Analytics</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Observed buy and sell flow by token, plus current StellarBin liquidity.
+          </p>
         </div>
+        <button
+          type="button"
+          onClick={() => void refetch()}
+          disabled={isFetching}
+          aria-label="Refresh market analytics"
+          title="Refresh market analytics"
+          className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-secondary hover:text-foreground disabled:opacity-50"
+          data-testid="button-refresh-analytics"
+        >
+          <RefreshCw className={`h-4 w-4 ${isFetching ? "animate-spin" : ""}`} />
+        </button>
+      </header>
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <Metric label="Tokens with observed trades" value={activeTokenCount.toLocaleString("en-US")} loading={isLoading} />
+        <Metric label="StellarBin swap events" value={sourceRecords("dlmm")} loading={isLoading} />
+        <Metric label="Stellar DEX trade records" value={sourceRecords("dex")} loading={isLoading} />
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <Card className="p-6 bg-card border-border">
-          <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wider mb-4">TVL Over Time</h3>
-          <div className="h-[280px] w-full">
-            {loadingCharts ? (
-              <Skeleton className="w-full h-full" />
-            ) : filteredHistory && filteredHistory.length > 0 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={filteredHistory}>
-                  <defs>
-                    <linearGradient id="tvlGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity={0.35} />
-                      <stop offset="100%" stopColor="hsl(var(--primary))" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-                  <XAxis
-                    dataKey="timestamp"
-                    tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 11 }}
-                    tickFormatter={(val) => new Date(val).toLocaleDateString("en", { month: "short", day: "numeric" })}
-                    axisLine={false}
-                    tickLine={false}
-                  />
-                  <YAxis
-                    tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 11 }}
-                    tickFormatter={(val) => `$${abbreviate(val)}`}
-                    axisLine={false}
-                    tickLine={false}
-                    width={56}
-                  />
-                  <Tooltip
-                    contentStyle={{ backgroundColor: "hsl(var(--card))", borderColor: "hsl(var(--border))", borderRadius: 8 }}
-                    labelStyle={{ color: "hsl(var(--muted-foreground))" }}
-                    formatter={(value: number) => [`$${value.toLocaleString("en", { maximumFractionDigits: 0 })}`, "TVL"]}
-                    labelFormatter={(val) => new Date(val).toLocaleString()}
-                  />
-                  <Area type="monotone" dataKey="tvl" stroke="hsl(var(--primary))" strokeWidth={2} fill="url(#tvlGradient)" />
-                </AreaChart>
-              </ResponsiveContainer>
-            ) : (
-              <div className="h-full flex items-center justify-center text-muted-foreground text-sm">No historical data available</div>
-            )}
-          </div>
-        </Card>
-
-        <Card className="p-6 bg-card border-border">
-          <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wider mb-4">Volume Over Time</h3>
-          <div className="h-[280px] w-full">
-            {loadingCharts ? (
-              <Skeleton className="w-full h-full" />
-            ) : filteredHistory && filteredHistory.length > 0 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={filteredHistory}>
-                  <defs>
-                    <linearGradient id="volumeGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="hsl(var(--accent))" stopOpacity={0.35} />
-                      <stop offset="100%" stopColor="hsl(var(--accent))" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-                  <XAxis
-                    dataKey="timestamp"
-                    tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 11 }}
-                    tickFormatter={(val) => new Date(val).toLocaleDateString("en", { month: "short", day: "numeric" })}
-                    axisLine={false}
-                    tickLine={false}
-                  />
-                  <YAxis
-                    tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 11 }}
-                    tickFormatter={(val) => `$${abbreviate(val)}`}
-                    axisLine={false}
-                    tickLine={false}
-                    width={56}
-                  />
-                  <Tooltip
-                    contentStyle={{ backgroundColor: "hsl(var(--card))", borderColor: "hsl(var(--border))", borderRadius: 8 }}
-                    labelStyle={{ color: "hsl(var(--muted-foreground))" }}
-                    formatter={(value: number) => [`$${value.toLocaleString("en", { maximumFractionDigits: 0 })}`, "Volume"]}
-                    labelFormatter={(val) => new Date(val).toLocaleString()}
-                  />
-                  <Area type="monotone" dataKey="volume" stroke="hsl(var(--accent))" strokeWidth={2} fill="url(#volumeGradient)" />
-                </AreaChart>
-              </ResponsiveContainer>
-            ) : (
-              <div className="h-full flex items-center justify-center text-muted-foreground text-sm">No historical data available</div>
-            )}
-          </div>
-        </Card>
-      </div>
-
-      <Card className="bg-card border-border overflow-hidden">
-        <div className="p-4 border-b border-border">
-          <h3 className="font-bold">Recent Transactions</h3>
+      {marketFlow && (
+        <div className="flex flex-col gap-1 text-xs text-muted-foreground sm:flex-row sm:justify-between">
+          <span>{marketFlow.network === "mainnet" ? "Stellar Mainnet" : "Stellar Testnet"}</span>
+          <span>Updated {new Date(marketFlow.asOf).toLocaleString()}</span>
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-secondary/50 text-muted-foreground">
-              <tr>
-                <th className="px-4 py-2 text-left font-medium">Type</th>
-                <th className="px-4 py-2 text-left font-medium">Value</th>
-                <th className="px-4 py-2 text-left font-medium">Time</th>
-                <th className="px-4 py-2 text-right font-medium">Tx Hash</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border">
-              {txLoading ? (
-                <tr><td colSpan={4} className="p-4 text-center text-muted-foreground">Loading...</td></tr>
-              ) : (
-                transactions?.map(tx => (
-                  <tr key={tx.id} className="hover:bg-muted/30">
-                    <td className="px-4 py-3 capitalize whitespace-nowrap">{tx.type.replace('_', ' ')}</td>
-                    <td className="px-4 py-3 font-mono whitespace-nowrap">${tx.valueUsd?.toLocaleString()}</td>
-                    <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">{new Date(tx.timestamp).toLocaleString()}</td>
-                    <td className="px-4 py-3 text-right font-mono text-primary whitespace-nowrap">{tx.txHash.substring(0, 8)}...</td>
+      )}
+
+      {isError && (
+        <p className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive" role="alert">
+          Market analytics could not be loaded. Refresh to try again.
+        </p>
+      )}
+
+      {marketFlow && (marketFlow.dlmm.status === "unavailable" || marketFlow.dex.status === "unavailable") && (
+        <div className="space-y-1 rounded-md border border-yellow-500/30 bg-yellow-500/10 p-3 text-sm text-yellow-200" role="status">
+          {marketFlow.dlmm.status === "unavailable" && (
+            <p>StellarBin data unavailable: {marketFlow.dlmm.error}</p>
+          )}
+          {marketFlow.dex.status === "unavailable" && (
+            <p>Stellar DEX data unavailable: {marketFlow.dex.error}</p>
+          )}
+        </div>
+      )}
+
+      {marketFlow && (marketFlow.dlmm.truncated || marketFlow.dex.truncated) && (
+        <p className="rounded-md border border-yellow-500/30 bg-yellow-500/10 p-3 text-xs text-yellow-200" role="status">
+          The source record cap was reached. Results may not include every trade in the displayed window.
+        </p>
+      )}
+
+      <section className="space-y-4" aria-label="Token supply and demand">
+        <div className="flex flex-col gap-3 border-b border-border pb-3 sm:flex-row sm:items-center sm:justify-between">
+          <h2 className="text-base font-semibold">Token supply &amp; demand</h2>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <Input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Filter token or address"
+              aria-label="Filter market flow by token or address"
+              className="h-9 w-full sm:w-56"
+              data-testid="input-market-flow-search"
+            />
+            <div className="inline-flex w-fit rounded-md border border-border p-1" role="group" aria-label="Market source">
+              {VENUES.map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  onClick={() => setVenue(option.id)}
+                  aria-pressed={venue === option.id}
+                  className={`rounded-sm px-3 py-1.5 text-xs font-medium transition-colors ${venue === option.id ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                  data-testid={`filter-venue-${option.id}`}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+          <p>StellarBin: {marketFlow?.dlmm.window ?? "Loading source window..."}</p>
+          <p>Stellar DEX: {marketFlow?.dex.window ?? "Loading source window..."}</p>
+        </div>
+
+        {isLoading ? (
+          <div className="space-y-2">
+            <Skeleton className="h-12 w-full" />
+            <Skeleton className="h-12 w-full" />
+            <Skeleton className="h-12 w-full" />
+          </div>
+        ) : rows.length > 0 ? (
+          <Card className="overflow-hidden border-border bg-card">
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-212.5 text-sm">
+                <thead className="bg-secondary/50 text-left text-xs text-muted-foreground">
+                  <tr>
+                    <th className="px-4 py-3 font-medium">Token</th>
+                    <th className="px-4 py-3 font-medium">Venue</th>
+                    <th className="px-4 py-3 text-right font-medium">Trade records</th>
+                    <th className="px-4 py-3 text-right font-medium">Observed flow</th>
+                    <th className="px-4 py-3 text-right font-medium">Net / buy share</th>
+                    <th className="px-4 py-3 text-right font-medium">DLMM reserves</th>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </Card>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {rows.map((row) => {
+                    const net = row.buy - row.sell;
+                    const total = row.buy + row.sell;
+                    const buyShare = total > 0n ? Number((row.buy * 10_000n) / total) / 100 : 0;
+                    return (
+                      <tr key={`${row.asset.address}-${row.source}`} data-testid={`row-flow-${row.source}-${row.asset.address}`}>
+                        <td className="px-4 py-3">
+                          <div className="font-semibold">{row.asset.symbol}</div>
+                          <div className="mt-0.5 font-mono text-[10px] text-muted-foreground" title={row.asset.address}>
+                            {shortAddress(row.asset.address)}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          {row.source === "dlmm" ? "StellarBin DLMM" : "Stellar DEX"}
+                        </td>
+                        <td className="px-4 py-3 text-right font-mono tabular-nums">{row.records.toLocaleString("en-US")}</td>
+                        <td className="px-4 py-3 text-right font-mono text-xs tabular-nums">
+                          <div className="text-emerald-400">Buy {formatRawUnits(row.buy, row.asset.decimals)} {row.asset.symbol}</div>
+                          <div className="mt-1 text-rose-400">Sell {formatRawUnits(row.sell, row.asset.decimals)} {row.asset.symbol}</div>
+                        </td>
+                        <td className="px-4 py-3 text-right font-mono text-xs tabular-nums">
+                          <div className={net >= 0n ? "text-emerald-400" : "text-rose-400"}>
+                            {net > 0n ? "+" : ""}{formatRawUnits(net, row.asset.decimals)} {row.asset.symbol}
+                          </div>
+                          <div className="mt-1 text-muted-foreground">{buyShare.toFixed(2)}% buy</div>
+                        </td>
+                        <td className="px-4 py-3 text-right font-mono tabular-nums text-muted-foreground">
+                          {row.asset.dlmmReserve === "0" ? "-" : `${formatRawUnits(BigInt(row.asset.dlmmReserve), row.asset.decimals)} ${row.asset.symbol}`}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        ) : marketFlow && marketFlow.dlmm.status === "available" && marketFlow.dex.status === "available" ? (
+          <div className="border-y border-border py-12 text-center text-sm text-muted-foreground">
+            No swap trades were reported within the available source windows.
+          </div>
+        ) : null}
+      </section>
+
+      <p className="max-w-4xl text-xs leading-relaxed text-muted-foreground">
+        Buy and sell flow classifies observed taker-side trades; it is not total circulating supply or a price prediction. Amounts are shown in each token&apos;s units, not USD. Stellar DEX records are network-wide Horizon trades, while StellarBin history is limited by the active Soroban RPC&apos;s retention and record cap.
+      </p>
     </div>
   );
 }
 
-function ChangeBadge({ value }: { value: number }) {
-  const isUp = value >= 0;
+function Metric({ label, value, loading }: { label: string; value: string; loading: boolean }) {
   return (
-    <div className={`text-xs font-mono flex items-center gap-0.5 mt-0.5 ${isUp ? "text-green-400" : "text-red-400"}`}>
-      {isUp ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-      {Math.abs(value).toFixed(2)}%
-    </div>
+    <Card className="border-border bg-card p-4">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      {loading ? <Skeleton className="mt-2 h-7 w-24" /> : (
+        <div className="mt-2 font-mono text-xl font-semibold tabular-nums">{value}</div>
+      )}
+    </Card>
   );
 }
 
-function abbreviate(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return n.toLocaleString("en", { maximumFractionDigits: 0 });
+function formatRawUnits(value: bigint, decimals: number): string {
+  const negative = value < 0n;
+  const magnitude = negative ? -value : value;
+  const scale = 10n ** BigInt(decimals);
+  const whole = (magnitude / scale).toLocaleString("en-US");
+  const fraction = (magnitude % scale).toString().padStart(decimals, "0").replace(/0+$/, "");
+  return `${negative ? "-" : ""}${whole}${fraction ? `.${fraction}` : ""}`;
+}
+
+function shortAddress(address: string): string {
+  if (address === "native") return "Native asset";
+  return `${address.slice(0, 5)}...${address.slice(-5)}`;
 }

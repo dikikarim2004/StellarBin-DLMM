@@ -17,6 +17,8 @@ tags:
     description: Swap operations
   - name: transactions
     description: Transaction history
+  - name: analytics
+    description: Market activity analytics
 
 paths:
   /healthz:
@@ -134,6 +136,19 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ProtocolSummary"
+
+  /analytics/market-flow:
+    get:
+      operationId: getMarketFlow
+      tags: [analytics]
+      summary: Get observed buy and sell flows from DLMM and Stellar DEX
+      responses:
+        "200":
+          description: Recent on-chain market flows and current DLMM reserves
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MarketFlow"
 
   /tokens:
     get:
@@ -662,6 +677,73 @@ components:
         feePaid:
           type: string
           description: "Raw stroops (i128), as a string to avoid precision loss"
+
+    MarketFlow:
+      type: object
+      required: [asOf, network, dlmm, dex, assets]
+      properties:
+        asOf:
+          type: string
+          format: date-time
+        network:
+          type: string
+          enum: [testnet, mainnet]
+        dlmm:
+          $ref: "#/components/schemas/MarketFlowSource"
+        dex:
+          $ref: "#/components/schemas/MarketFlowSource"
+        assets:
+          type: array
+          items:
+            $ref: "#/components/schemas/MarketFlowAsset"
+
+    MarketFlowSource:
+      type: object
+      required: [status, window, records, truncated, error]
+      properties:
+        status:
+          type: string
+          enum: [available, unavailable]
+        window:
+          type: string
+        records:
+          type: integer
+        truncated:
+          type: boolean
+        error:
+          type: string
+          nullable: true
+
+    MarketFlowAsset:
+      type: object
+      required: [address, symbol, decimals, dlmmBuy, dlmmSell, dlmmTrades, dexBuy, dexSell, dexTrades, dlmmReserve]
+      properties:
+        address:
+          type: string
+          description: Canonical token contract address or native asset identifier
+        symbol:
+          type: string
+        decimals:
+          type: integer
+        dlmmBuy:
+          type: string
+          description: Raw token units bought in observed DLMM swaps
+        dlmmSell:
+          type: string
+          description: Raw token units sold in observed DLMM swaps
+        dlmmTrades:
+          type: integer
+        dexBuy:
+          type: string
+          description: Raw token units bought in observed Horizon trades
+        dexSell:
+          type: string
+          description: Raw token units sold in observed Horizon trades
+        dexTrades:
+          type: integer
+        dlmmReserve:
+          type: string
+          description: Current token reserve across returned DLMM pools, in raw token units
 
     PositionEvent:
       type: object

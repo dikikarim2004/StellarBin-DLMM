@@ -170,6 +170,41 @@ export const GetProtocolSummaryResponse = zod.object({
 
 
 /**
+ * @summary Get observed buy and sell flows from DLMM and Stellar DEX
+ */
+export const GetMarketFlowResponse = zod.object({
+  "asOf": zod.coerce.date(),
+  "network": zod.enum(['testnet', 'mainnet']),
+  "dlmm": zod.object({
+  "status": zod.enum(['available', 'unavailable']),
+  "window": zod.string(),
+  "records": zod.number(),
+  "truncated": zod.boolean(),
+  "error": zod.string().nullable()
+}),
+  "dex": zod.object({
+  "status": zod.enum(['available', 'unavailable']),
+  "window": zod.string(),
+  "records": zod.number(),
+  "truncated": zod.boolean(),
+  "error": zod.string().nullable()
+}),
+  "assets": zod.array(zod.object({
+  "address": zod.string().describe('Canonical token contract address or native asset identifier'),
+  "symbol": zod.string(),
+  "decimals": zod.number(),
+  "dlmmBuy": zod.string().describe('Raw token units bought in observed DLMM swaps'),
+  "dlmmSell": zod.string().describe('Raw token units sold in observed DLMM swaps'),
+  "dlmmTrades": zod.number(),
+  "dexBuy": zod.string().describe('Raw token units bought in observed Horizon trades'),
+  "dexSell": zod.string().describe('Raw token units sold in observed Horizon trades'),
+  "dexTrades": zod.number(),
+  "dlmmReserve": zod.string().describe('Current token reserve across returned DLMM pools, in raw token units')
+}))
+})
+
+
+/**
  * @summary List all supported tokens
  */
 export const ListTokensResponseItem = zod.object({

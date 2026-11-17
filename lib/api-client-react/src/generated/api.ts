@@ -27,6 +27,7 @@ import type {
   HealthStatus,
   ListPoolsParams,
   ListTransactionsParams,
+  MarketFlow,
   Pool,
   PoolDetail,
   PoolStats,
@@ -526,6 +527,83 @@ export function useGetProtocolSummary<TData = Awaited<ReturnType<typeof getProto
  ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
 
   const queryOptions = getGetProtocolSummaryQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getGetMarketFlowUrl = () => {
+
+
+
+
+  return `/api/analytics/market-flow`
+}
+
+/**
+ * @summary Get observed buy and sell flows from DLMM and Stellar DEX
+ */
+export const getMarketFlow = async ( options?: RequestInit): Promise<MarketFlow> => {
+
+  return customFetch<MarketFlow>(getGetMarketFlowUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetMarketFlowQueryKey = () => {
+    return [
+    `/api/analytics/market-flow`
+    ] as const;
+    }
+
+
+export const getGetMarketFlowQueryOptions = <TData = Awaited<ReturnType<typeof getMarketFlow>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getMarketFlow>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetMarketFlowQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getMarketFlow>>> = ({ signal }) => getMarketFlow({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getMarketFlow>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetMarketFlowQueryResult = NonNullable<Awaited<ReturnType<typeof getMarketFlow>>>
+export type GetMarketFlowQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary Get observed buy and sell flows from DLMM and Stellar DEX
+ */
+
+export function useGetMarketFlow<TData = Awaited<ReturnType<typeof getMarketFlow>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getMarketFlow>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetMarketFlowQueryOptions(options)
 
   const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
 

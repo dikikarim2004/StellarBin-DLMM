@@ -16,6 +16,7 @@
  */
 
 import {
+  Asset,
   Address,
   BASE_FEE,
   Contract,
@@ -640,6 +641,331 @@ export async function getRecentSwaps(poolId: string): Promise<RecentSwapRecord[]
   const dlmmId = parseDlmmPoolRecordId(poolId);
   if (dlmmId === null) return null;
   return getRecentSwapsForPool(dlmmId);
+}
+
+export interface MarketFlowSourceRecord {
+  status: "available" | "unavailable";
+  window: string;
+  records: number;
+  truncated: boolean;
+  error: string | null;
+}
+
+export interface MarketFlowAssetRecord {
+  address: string;
+  symbol: string;
+  decimals: number;
+  dlmmBuy: string;
+  dlmmSell: string;
+  dlmmTrades: number;
+  dexBuy: string;
+  dexSell: string;
+  dexTrades: number;
+  dlmmReserve: string;
+}
+
+export interface MarketFlowRecord {
+  asOf: string;
+  network: "testnet";
+  dlmm: MarketFlowSourceRecord;
+  dex: MarketFlowSourceRecord;
+  assets: MarketFlowAssetRecord[];
+}
+
+interface MutableMarketFlowAsset {
+  address: string;
+  symbol: string;
+  dlmmBuy: bigint;
+  dlmmSell: bigint;
+  dlmmTrades: number;
+  dexBuy: bigint;
+  dexSell: bigint;
+  dexTrades: number;
+  dlmmReserve: bigint;
+}
+
+interface HorizonTradeRecord {
+  ledger_close_time: string;
+  base_amount: string;
+  base_asset_type: string;
+  base_asset_code?: string;
+  base_asset_issuer?: string;
+  counter_amount: string;
+  counter_asset_type: string;
+  counter_asset_code?: string;
+  counter_asset_issuer?: string;
+  base_is_seller: boolean;
+}
+
+interface HorizonTradesPage {
+  _embedded?: { records?: HorizonTradeRecord[] };
+  _links?: { next?: { href?: string } };
+}
+
+const MARKET_FLOW_PAGE_SIZE = 200;
+const MARKET_FLOW_MAX_PAGES = 20;
+const MARKET_FLOW_DEX_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+const MARKET_FLOW_RAW_SCALE = 10_000_000n;
+
+function amountToRawUnits(amount: string | number): bigint {
+  const [whole = "0", fraction = ""] = String(amount).split(".");
+  const scaledFraction = fraction.padEnd(7, "0").slice(0, 7);
+  return BigInt(whole) * MARKET_FLOW_RAW_SCALE + BigInt(scaledFraction || "0");
+}
+
+function canonicalPoolTokenAddress(address: string, symbol: string): string {
+  if (address === "native" || address === NATIVE_XLM_SAC) return "native";
+  if (address.startsWith("G")) {
+    try {
+      return new Asset(symbol, address).contractId(NETWORK_PASSPHRASE);
+    } catch {
+      return address;
+    }
+  }
+  return address;
+}
+
+function horizonTradeAsset(
+  type: string,
+  code?: string,
+  issuer?: string,
+): { address: string; symbol: string } | null {
+  if (type === "native") return { address: "native", symbol: "XLM" };
+  if (!code || !issuer) return null;
+  try {
+    return {
+      address: new Asset(code, issuer).contractId(NETWORK_PASSPHRASE),
+      symbol: code,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function readMarketFlowDlmmEvents(): Promise<{
+  events: rpc.Api.EventResponse[];
+  truncated: boolean;
+}> {
+  const latestSequence = await getLatestLedgerSequence();
+  const startLedger = Math.max(1, latestSequence - RECENT_SWAP_LOOKBACK_LEDGERS);
+  const swapTopics = ["SWAP", "SWAP_OUT"].map((name) =>
+    xdr.ScVal.scvSymbol(name).toXDR("base64"),
+  );
+  const filters: rpc.Api.EventFilter[] = [
+    {
+      type: "contract",
+      contractIds: [DLMM_CONTRACT_ID],
+      topics: swapTopics.map((topic) => [topic, "*", "*"]),
+    },
+  ];
+
+  const events: rpc.Api.EventResponse[] = [];
+  let cursor: string | undefined;
+  let truncated = false;
+  for (let page = 0; page < MARKET_FLOW_MAX_PAGES; page++) {
+    const response = cursor
+      ? await getRpc().getEvents({ filters, cursor, limit: MARKET_FLOW_PAGE_SIZE })
+      : await getRpc().getEvents({ filters, startLedger, limit: MARKET_FLOW_PAGE_SIZE });
+    events.push(...response.events);
+    if (response.events.length < MARKET_FLOW_PAGE_SIZE) break;
+    if (page === MARKET_FLOW_MAX_PAGES - 1) {
+      truncated = true;
+      break;
+    }
+    if (!response.cursor || response.cursor === cursor) break;
+    cursor = response.cursor;
+  }
+  return { events, truncated };
+}
+
+async function readMarketFlowDexTrades(since: number): Promise<{
+  trades: HorizonTradeRecord[];
+  truncated: boolean;
+}> {
+  const horizonOrigin = new URL(HORIZON_URL).origin;
+  let url = new URL("/trades", HORIZON_URL);
+  url.searchParams.set("trade_type", "all");
+  url.searchParams.set("order", "desc");
+  url.searchParams.set("limit", String(MARKET_FLOW_PAGE_SIZE));
+
+  const trades: HorizonTradeRecord[] = [];
+  let truncated = false;
+  for (let page = 0; page < MARKET_FLOW_MAX_PAGES; page++) {
+    const response = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+    if (!response.ok) throw new Error(`Horizon trades request failed: HTTP ${response.status}`);
+    const data = (await response.json()) as HorizonTradesPage;
+    const records = data._embedded?.records ?? [];
+    let reachedWindowStart = false;
+    for (const trade of records) {
+      const timestamp = Date.parse(trade.ledger_close_time);
+      if (!Number.isFinite(timestamp)) continue;
+      if (timestamp < since) {
+        reachedWindowStart = true;
+        break;
+      }
+      trades.push(trade);
+    }
+    if (reachedWindowStart || records.length === 0) break;
+    if (page === MARKET_FLOW_MAX_PAGES - 1) {
+      truncated = true;
+      break;
+    }
+
+    const nextHref = data._links?.next?.href;
+    if (!nextHref) break;
+    const nextUrl = new URL(nextHref, HORIZON_URL);
+    if (nextUrl.origin !== horizonOrigin) {
+      throw new Error("Horizon returned a pagination link for a different host");
+    }
+    url = nextUrl;
+  }
+  return { trades, truncated };
+}
+
+const getMarketFlowCached = memoize(30_000, async (): Promise<MarketFlowRecord> => {
+  const asOf = new Date();
+  const dexSince = asOf.getTime() - MARKET_FLOW_DEX_LOOKBACK_MS;
+  const dlmm: MarketFlowSourceRecord = {
+    status: "available",
+    window: "Latest 9,000 ledgers; limited by Soroban RPC retention",
+    records: 0,
+    truncated: false,
+    error: null,
+  };
+  const dex: MarketFlowSourceRecord = {
+    status: "available",
+    window: "Last 24 hours of Horizon network trades",
+    records: 0,
+    truncated: false,
+    error: null,
+  };
+  const assets = new Map<string, MutableMarketFlowAsset>();
+  const ensureAsset = (address: string, symbol: string): MutableMarketFlowAsset => {
+    let asset = assets.get(address);
+    if (!asset) {
+      asset = {
+        address,
+        symbol,
+        dlmmBuy: 0n,
+        dlmmSell: 0n,
+        dlmmTrades: 0,
+        dexBuy: 0n,
+        dexSell: 0n,
+        dexTrades: 0,
+        dlmmReserve: 0n,
+      };
+      assets.set(address, asset);
+    }
+    return asset;
+  };
+
+  try {
+    const pools = await getAllDlmmPools();
+    const poolsById = new Map(pools.map((pool) => [pool.dlmmPoolId!, pool]));
+    for (const pool of pools) {
+      const tokenXAddress = canonicalPoolTokenAddress(pool.tokenX.address, pool.tokenX.symbol);
+      const tokenYAddress = canonicalPoolTokenAddress(pool.tokenY.address, pool.tokenY.symbol);
+      ensureAsset(tokenXAddress, pool.tokenX.symbol).dlmmReserve += amountToRawUnits(pool.reserveX ?? 0);
+      ensureAsset(tokenYAddress, pool.tokenY.symbol).dlmmReserve += amountToRawUnits(pool.reserveY ?? 0);
+    }
+
+    const { events, truncated } = await readMarketFlowDlmmEvents();
+    dlmm.truncated = truncated;
+    for (const event of events) {
+      try {
+        const [eventName, rawPoolId, rawDirection] = event.topic.map((topic) => scValToNative(topic)) as [
+          string,
+          bigint | number,
+          boolean,
+        ];
+        const pool = poolsById.get(Number(rawPoolId));
+        if (!pool || (eventName !== "SWAP" && eventName !== "SWAP_OUT")) continue;
+        const [, amountIn, amountOut] = scValToNative(event.value) as [
+          string,
+          bigint,
+          bigint,
+          bigint,
+          bigint,
+        ];
+        const tokenIn = rawDirection ? pool.tokenX : pool.tokenY;
+        const tokenOut = rawDirection ? pool.tokenY : pool.tokenX;
+        const tokenInFlow = ensureAsset(canonicalPoolTokenAddress(tokenIn.address, tokenIn.symbol), tokenIn.symbol);
+        const tokenOutFlow = ensureAsset(canonicalPoolTokenAddress(tokenOut.address, tokenOut.symbol), tokenOut.symbol);
+        tokenInFlow.dlmmSell += amountIn;
+        tokenInFlow.dlmmTrades++;
+        tokenOutFlow.dlmmBuy += amountOut;
+        tokenOutFlow.dlmmTrades++;
+        dlmm.records++;
+      } catch {
+        // Ignore malformed event payloads while keeping other on-chain records.
+      }
+    }
+  } catch (error) {
+    dlmm.status = "unavailable";
+    dlmm.error = error instanceof Error ? error.message : "Unable to read DLMM swap events";
+  }
+
+  try {
+    const { trades, truncated } = await readMarketFlowDexTrades(dexSince);
+    dex.truncated = truncated;
+    for (const trade of trades) {
+      const base = horizonTradeAsset(
+        trade.base_asset_type,
+        trade.base_asset_code,
+        trade.base_asset_issuer,
+      );
+      const counter = horizonTradeAsset(
+        trade.counter_asset_type,
+        trade.counter_asset_code,
+        trade.counter_asset_issuer,
+      );
+      if (!base || !counter || typeof trade.base_is_seller !== "boolean") continue;
+
+      const baseFlow = ensureAsset(base.address, base.symbol);
+      const counterFlow = ensureAsset(counter.address, counter.symbol);
+      const baseAmount = amountToRawUnits(trade.base_amount);
+      const counterAmount = amountToRawUnits(trade.counter_amount);
+      if (trade.base_is_seller) {
+        baseFlow.dexSell += baseAmount;
+        counterFlow.dexBuy += counterAmount;
+      } else {
+        baseFlow.dexBuy += baseAmount;
+        counterFlow.dexSell += counterAmount;
+      }
+      baseFlow.dexTrades++;
+      counterFlow.dexTrades++;
+      dex.records++;
+    }
+  } catch (error) {
+    dex.status = "unavailable";
+    dex.error = error instanceof Error ? error.message : "Unable to read Horizon trades";
+  }
+
+  return {
+    asOf: asOf.toISOString(),
+    network: "testnet",
+    dlmm,
+    dex,
+    assets: [...assets.values()]
+      .filter((asset) => asset.dlmmTrades + asset.dexTrades > 0)
+      .sort((first, second) => second.dlmmTrades + second.dexTrades - (first.dlmmTrades + first.dexTrades))
+      .map((asset) => ({
+        address: asset.address,
+        symbol: asset.symbol,
+        decimals: 7,
+        dlmmBuy: String(asset.dlmmBuy),
+        dlmmSell: String(asset.dlmmSell),
+        dlmmTrades: asset.dlmmTrades,
+        dexBuy: String(asset.dexBuy),
+        dexSell: String(asset.dexSell),
+        dexTrades: asset.dexTrades,
+        dlmmReserve: String(asset.dlmmReserve),
+      })),
+  };
+});
+
+export function getMarketFlow(): Promise<MarketFlowRecord> {
+  return getMarketFlowCached();
 }
 
 export interface PositionEventRecord {

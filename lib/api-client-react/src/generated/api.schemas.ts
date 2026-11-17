@@ -200,6 +200,57 @@ export interface RecentSwap {
   feePaid: string;
 }
 
+export type MarketFlowNetwork = typeof MarketFlowNetwork[keyof typeof MarketFlowNetwork];
+
+
+export const MarketFlowNetwork = {
+  testnet: 'testnet',
+  mainnet: 'mainnet',
+} as const;
+
+export type MarketFlowSourceStatus = typeof MarketFlowSourceStatus[keyof typeof MarketFlowSourceStatus];
+
+
+export const MarketFlowSourceStatus = {
+  available: 'available',
+  unavailable: 'unavailable',
+} as const;
+
+export interface MarketFlowSource {
+  status: MarketFlowSourceStatus;
+  window: string;
+  records: number;
+  truncated: boolean;
+  error: string | null;
+}
+
+export interface MarketFlowAsset {
+  /** Canonical token contract address or native asset identifier */
+  address: string;
+  symbol: string;
+  decimals: number;
+  /** Raw token units bought in observed DLMM swaps */
+  dlmmBuy: string;
+  /** Raw token units sold in observed DLMM swaps */
+  dlmmSell: string;
+  dlmmTrades: number;
+  /** Raw token units bought in observed Horizon trades */
+  dexBuy: string;
+  /** Raw token units sold in observed Horizon trades */
+  dexSell: string;
+  dexTrades: number;
+  /** Current token reserve across returned DLMM pools, in raw token units */
+  dlmmReserve: string;
+}
+
+export interface MarketFlow {
+  asOf: string;
+  network: MarketFlowNetwork;
+  dlmm: MarketFlowSource;
+  dex: MarketFlowSource;
+  assets: MarketFlowAsset[];
+}
+
 export type PositionEventAction = typeof PositionEventAction[keyof typeof PositionEventAction];
 
 

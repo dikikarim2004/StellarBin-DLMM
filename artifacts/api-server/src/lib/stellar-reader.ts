@@ -128,6 +128,10 @@ export interface PositionRecord {
   liquidityY: number;
   valueUsd: number;
   unrealizedFees: number;
+  valueXlm?: number;
+  claimableFeesXlm?: number;
+  claimableFeeX: number;
+  claimableFeeY: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -530,6 +534,26 @@ export async function getUserPositions(address: string): Promise<PositionRecord[
         const liquidityY = fromStroops(p.amount_y);
         const claimableFeeX = fromStroops(p.claimable_fee_x ?? 0n);
         const claimableFeeY = fromStroops(p.claimable_fee_y ?? 0n);
+        const binPrice = Math.pow(1 + pool.binStep / 10_000, binId);
+        const xlmUsdPrice = pool.tokenX.symbol === "XLM"
+          ? pool.tokenX.price
+          : pool.tokenY.symbol === "XLM"
+          ? pool.tokenY.price
+          : 0;
+        let valueXlm: number | undefined;
+        let claimableFeesXlm: number | undefined;
+        if (pool.tokenX.address === "native") {
+          valueXlm = liquidityX + liquidityY / binPrice;
+          claimableFeesXlm = claimableFeeX + claimableFeeY / binPrice;
+        } else if (pool.tokenY.address === "native") {
+          valueXlm = liquidityY + liquidityX * binPrice;
+          claimableFeesXlm = claimableFeeY + claimableFeeX * binPrice;
+        } else if (xlmUsdPrice > 0) {
+          const valueUsd = liquidityX * pool.tokenX.price + liquidityY * pool.tokenY.price;
+          const claimableUsd = claimableFeeX * pool.tokenX.price + claimableFeeY * pool.tokenY.price;
+          if (valueUsd > 0) valueXlm = valueUsd / xlmUsdPrice;
+          if (claimableUsd > 0) claimableFeesXlm = claimableUsd / xlmUsdPrice;
+        }
         return {
           id: `${address.slice(0, 6)}-pool${poolId}-bin${binId}`,
           poolId: dlmmPoolRecordId(poolId),
@@ -544,6 +568,10 @@ export async function getUserPositions(address: string): Promise<PositionRecord[
           valueUsd: liquidityX * pool.tokenX.price + liquidityY * pool.tokenY.price,
           unrealizedFees:
             claimableFeeX * pool.tokenX.price + claimableFeeY * pool.tokenY.price,
+          valueXlm,
+          claimableFeesXlm,
+          claimableFeeX,
+          claimableFeeY,
         };
       });
     }),
@@ -1067,10 +1095,10 @@ export interface PortfolioClosedPositionRecord {
   binId: number;
   openedAt: string;
   closedAt: string;
-  depositsUsd: number;
-  withdrawnUsd: number;
-  feesClaimedUsd: number;
-  pnlUsd: number;
+  deposits: number;
+  withdrawn: number;
+  feesClaimed: number;
+  pnl: number;
   txHash: string;
 }
 
@@ -1082,13 +1110,14 @@ export interface PortfolioSummaryRecord {
   basisMissingCount: number;
   historicalPriceGapCount: number;
   unpricedPoolCount: number;
-  totalValueUsd: number;
-  depositsUsd: number;
-  feesClaimedUsd: number;
-  claimableFeesUsd: number;
-  realizedPnlUsd: number;
-  unrealizedPnlUsd: number;
-  totalPnlUsd: number;
+  pnlUnit: "USD" | "XLM";
+  totalValue: number;
+  deposits: number;
+  feesClaimed: number;
+  claimableFees: number;
+  realizedPnl: number;
+  unrealizedPnl: number;
+  totalPnl: number;
   dailyPnl: PortfolioDailyPnlRecord[];
   closedPositions: PortfolioClosedPositionRecord[];
 }
@@ -1177,6 +1206,7 @@ export async function getPortfolioSummary(address: string): Promise<PortfolioSum
   const poolRecords = await getAllDlmmPools();
   const poolsById = new Map(poolRecords.map((pool) => [pool.dlmmPoolId!, pool]));
   const positions = await getUserPositions(address);
+  const activePoolIds = new Set(positions.map((position) => position.pool.dlmmPoolId));
   const latestLedger = await getLatestLedgerSequence();
   const startLedger = Math.max(1, latestLedger - RECENT_SWAP_LOOKBACK_LEDGERS);
   const poolEvents = await Promise.all(
@@ -1191,23 +1221,58 @@ export async function getPortfolioSummary(address: string): Promise<PortfolioSum
   );
 
   const historyTruncated = poolEvents.some((result) => result.truncated);
+  const unpricedQuotePoolIds = new Set(
+    poolEvents
+      .filter((result) => result.events.length > 0 && (poolsById.get(result.poolId)?.tokenY.price ?? 0) <= 0)
+      .map((result) => result.poolId),
+  );
+  for (const poolId of activePoolIds) {
+    if (poolId !== undefined && (poolsById.get(poolId)?.tokenY.price ?? 0) <= 0) {
+      unpricedQuotePoolIds.add(poolId);
+    }
+  }
+  const pnlUnit: "USD" | "XLM" = unpricedQuotePoolIds.size > 0 ? "XLM" : "USD";
+  const xlmUsdPrice = await getXlmPrice();
   const dailyPnl = new Map<string, { pnlUsd: number; eventCount: number }>();
   const closedPositions: PortfolioClosedPositionRecord[] = [];
   const openCycles = new Map<string, {
     pool: PoolRecord;
     binId: number;
     openedAt: string;
-    depositsUsd: number;
-    feesClaimedUsd: number;
+    deposits: number;
+    feesClaimed: number;
     priced: boolean;
   }>();
-  let depositsUsd = 0;
-  let feesClaimedUsd = 0;
-  let realizedPnlUsd = 0;
+  let deposits = 0;
+  let feesClaimed = 0;
+  let realizedPnl = 0;
   let unpricedPoolCount = 0;
   let basisMissingCount = 0;
   let historicalPriceGapCount = 0;
   const unpricedPoolIds = new Set<number>();
+
+  function valueInPnlUnit(pool: PoolRecord, binId: number, amountX: number, amountY: number): number | null {
+    const binPrice = Math.pow(1 + pool.binStep / 10_000, binId);
+    if (!(binPrice > 0) || !Number.isFinite(binPrice)) return null;
+    if (pnlUnit === "USD") {
+      return pool.tokenY.price > 0
+        ? (amountX * binPrice + amountY) * pool.tokenY.price
+        : null;
+    }
+    if (pool.tokenX.address === "native" || pool.tokenX.symbol === "XLM") {
+      return amountX + amountY / binPrice;
+    }
+    if (pool.tokenY.address === "native" || pool.tokenY.symbol === "XLM") {
+      return amountY + amountX * binPrice;
+    }
+    if (pool.tokenY.price > 0) {
+      return ((amountX * binPrice + amountY) * pool.tokenY.price) / xlmUsdPrice;
+    }
+    if (pool.tokenX.price > 0) {
+      return ((amountX + amountY / binPrice) * pool.tokenX.price) / xlmUsdPrice;
+    }
+    return null;
+  }
 
   function addDailyPnl(timestamp: string, pnl: number) {
     const date = timestamp.slice(0, 10);
@@ -1224,9 +1289,7 @@ export async function getPortfolioSummary(address: string): Promise<PortfolioSum
       const key = `${result.poolId}:${event.binId}`;
       const amountX = rawAmount(event.amountX);
       const amountY = rawAmount(event.amountY);
-      const eventUsd = amountX === 0 && pool.tokenY.price > 0
-        ? amountY * pool.tokenY.price
-        : null;
+      const eventValue = valueInPnlUnit(pool, event.binId, amountX, amountY);
       let cycle = openCycles.get(key);
 
       if (event.action === "add") {
@@ -1235,36 +1298,32 @@ export async function getPortfolioSummary(address: string): Promise<PortfolioSum
             pool,
             binId: event.binId,
             openedAt: event.timestamp,
-            depositsUsd: 0,
-            feesClaimedUsd: 0,
-            priced: eventUsd !== null,
+            deposits: 0,
+            feesClaimed: 0,
+            priced: eventValue !== null,
           };
           openCycles.set(key, cycle);
         }
-        if (eventUsd === null || pool.tokenY.price <= 0) {
+        if (eventValue === null) {
           cycle.priced = false;
-          if (amountX > 0) historicalPriceGapCount++;
-          else unpricedPoolIds.add(result.poolId);
+          historicalPriceGapCount++;
+          unpricedPoolIds.add(result.poolId);
         } else {
-          cycle.depositsUsd += eventUsd;
-          depositsUsd += eventUsd;
+          cycle.deposits += eventValue;
+          deposits += eventValue;
         }
       } else if (event.action === "claim") {
-        if (eventUsd === null || pool.tokenY.price <= 0) {
-          if (amountX > 0) {
-            historicalPriceGapCount++;
-            if (cycle) cycle.priced = false;
-          } else {
-            unpricedPoolIds.add(result.poolId);
-          }
+        if (eventValue === null) {
+          historicalPriceGapCount++;
+          unpricedPoolIds.add(result.poolId);
+          if (cycle) cycle.priced = false;
           continue;
         }
-        const feeQuoteUsd = eventUsd;
-        feesClaimedUsd += feeQuoteUsd;
-        realizedPnlUsd += feeQuoteUsd;
-        addDailyPnl(event.timestamp, feeQuoteUsd);
+        feesClaimed += eventValue;
+        realizedPnl += eventValue;
+        addDailyPnl(event.timestamp, eventValue);
         if (cycle) {
-          cycle.feesClaimedUsd += feeQuoteUsd;
+          cycle.feesClaimed += eventValue;
         }
       } else {
         if (!cycle) {
@@ -1275,15 +1334,15 @@ export async function getPortfolioSummary(address: string): Promise<PortfolioSum
           openCycles.delete(key);
           continue;
         }
-        if (eventUsd === null) {
-          if (amountX > 0) historicalPriceGapCount++;
-          else unpricedPoolIds.add(result.poolId);
+        if (eventValue === null) {
+          historicalPriceGapCount++;
+          unpricedPoolIds.add(result.poolId);
           openCycles.delete(key);
           continue;
         }
-        const pnlUsd = eventUsd - cycle.depositsUsd;
-        realizedPnlUsd += pnlUsd;
-        addDailyPnl(event.timestamp, pnlUsd);
+        const pnl = eventValue - cycle.deposits;
+        realizedPnl += pnl;
+        addDailyPnl(event.timestamp, pnl);
         closedPositions.push({
           id: `${event.txHash}-${event.poolId}-${event.binId}`,
           poolId: dlmmPoolRecordId(event.poolId),
@@ -1291,10 +1350,10 @@ export async function getPortfolioSummary(address: string): Promise<PortfolioSum
           binId: event.binId,
           openedAt: cycle.openedAt,
           closedAt: event.timestamp,
-          depositsUsd: cycle.depositsUsd,
-          withdrawnUsd: eventUsd,
-          feesClaimedUsd: cycle.feesClaimedUsd,
-          pnlUsd: pnlUsd + cycle.feesClaimedUsd,
+          deposits: cycle.deposits,
+          withdrawn: eventValue,
+          feesClaimed: cycle.feesClaimed,
+          pnl: pnl + cycle.feesClaimed,
           txHash: event.txHash,
         });
         openCycles.delete(key);
@@ -1302,9 +1361,9 @@ export async function getPortfolioSummary(address: string): Promise<PortfolioSum
     }
   }
 
-  let claimableFeesUsd = 0;
-  let totalValueUsd = 0;
-  let unrealizedPnlUsd = 0;
+  let claimableFees = 0;
+  let totalValue = 0;
+  let unrealizedPnl = 0;
   const activePositionKeys = new Set<string>();
   for (const position of positions) {
     const poolId = position.pool.dlmmPoolId;
@@ -1312,9 +1371,24 @@ export async function getPortfolioSummary(address: string): Promise<PortfolioSum
     const binId = position.binId;
     const key = `${poolId}:${binId}`;
     activePositionKeys.add(key);
-    totalValueUsd += position.valueUsd + position.unrealizedFees;
-    claimableFeesUsd += position.unrealizedFees;
-    if (position.pool.tokenY.price <= 0) unpricedPoolIds.add(poolId);
+    const binPrice = Math.pow(1 + position.pool.binStep / 10_000, binId);
+    const positionValue = pnlUnit === "USD"
+      ? position.valueUsd + position.unrealizedFees
+      : valueInPnlUnit(
+          position.pool,
+          binId,
+          position.liquidityX + position.claimableFeeX,
+          position.liquidityY + position.claimableFeeY,
+        );
+    const feeValue = pnlUnit === "USD"
+      ? position.unrealizedFees
+      : valueInPnlUnit(position.pool, binId, position.claimableFeeX, position.claimableFeeY);
+    if (positionValue === null || feeValue === null) {
+      unpricedPoolIds.add(poolId);
+    } else {
+      totalValue += positionValue;
+      claimableFees += feeValue;
+    }
     const cycle = openCycles.get(key);
     if (!cycle) {
       basisMissingCount++;
@@ -1324,7 +1398,8 @@ export async function getPortfolioSummary(address: string): Promise<PortfolioSum
       unpricedPoolIds.add(poolId);
       continue;
     }
-    unrealizedPnlUsd += position.valueUsd + position.unrealizedFees - cycle.depositsUsd;
+    if (positionValue === null) continue;
+    unrealizedPnl += positionValue - cycle.deposits;
   }
 
   for (const key of openCycles.keys()) {
@@ -1343,13 +1418,14 @@ export async function getPortfolioSummary(address: string): Promise<PortfolioSum
     basisMissingCount,
     historicalPriceGapCount,
     unpricedPoolCount,
-    totalValueUsd,
-    depositsUsd,
-    feesClaimedUsd,
-    claimableFeesUsd,
-    realizedPnlUsd,
-    unrealizedPnlUsd,
-    totalPnlUsd: realizedPnlUsd + unrealizedPnlUsd,
+    pnlUnit,
+    totalValue,
+    deposits,
+    feesClaimed,
+    claimableFees,
+    realizedPnl,
+    unrealizedPnl,
+    totalPnl: realizedPnl + unrealizedPnl,
     dailyPnl: [...dailyPnl.entries()]
       .map(([date, value]) => ({ date, ...value }))
       .sort((first, second) => first.date.localeCompare(second.date)),

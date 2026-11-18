@@ -110,14 +110,15 @@ export default function PositionsPage() {
     () => new Map((portfolio?.dailyPnl ?? []).map((entry) => [entry.date, entry])),
     [portfolio?.dailyPnl],
   );
+  const pnlUnit = portfolio?.pnlUnit ?? "USD";
   const monthlyPnl = portfolio?.dailyPnl
     .filter((entry) => entry.date.startsWith(monthKey(calendarMonth)))
-    .reduce((sum, entry) => sum + entry.pnlUsd, 0) ?? 0;
+    .reduce((sum, entry) => sum + entry.pnl, 0) ?? 0;
   const closedPositions = portfolio?.closedPositions ?? [];
-  const wins = closedPositions.filter((position) => position.pnlUsd > 0);
+  const wins = closedPositions.filter((position) => position.pnl > 0);
   const winRate = closedPositions.length > 0 ? (wins.length / closedPositions.length) * 100 : null;
   const biggestWin = closedPositions.reduce(
-    (best, position) => Math.max(best, position.pnlUsd),
+    (best, position) => Math.max(best, position.pnl),
     0,
   );
 
@@ -137,24 +138,6 @@ export default function PositionsPage() {
             Current DLMM positions and PnL from available on-chain events.
           </p>
         </div>
-        {wallet.connected ? (
-          <button
-            onClick={() => setWalletModalOpen(true)}
-            className="flex items-center gap-2 bg-secondary hover:bg-secondary/80 border border-border px-3 py-2 rounded-md text-sm transition-colors self-start"
-            data-testid="button-wallet-address"
-          >
-            <div className="w-2 h-2 rounded-full bg-green-400" />
-            <span className="font-mono">{wallet.shortAddress}</span>
-            {wallet.xlmBalance && (
-              <span className="text-muted-foreground text-xs">· {wallet.xlmBalance} XLM</span>
-            )}
-          </button>
-        ) : (
-          <Button onClick={() => setWalletModalOpen(true)} className="self-start" data-testid="button-connect-positions">
-            <Wallet className="w-4 h-4 mr-2" />
-            Connect Wallet
-          </Button>
-        )}
       </header>
 
       {/* Not connected */}
@@ -177,26 +160,26 @@ export default function PositionsPage() {
             <div className="grid lg:grid-cols-[320px_minmax(0,1fr)]">
               <div className="space-y-5 border-b border-border p-5 lg:border-b-0 lg:border-r">
                 <div>
-                  <MetricLabel>Total Portfolio Value</MetricLabel>
-                  <p className="mt-1 font-mono text-3xl font-bold tabular-nums">{formatPortfolioUsd(portfolio?.totalValueUsd)}</p>
+                  <MetricLabel>Total Portfolio Value ({pnlUnit})</MetricLabel>
+                  <p className="mt-1 font-mono text-3xl font-bold tabular-nums">{formatPortfolioValue(portfolio?.totalValue, pnlUnit)}</p>
                 </div>
                 <div className="grid grid-cols-2 gap-4 border-b border-border pb-5">
-                  <PortfolioMetric label="Deposits · event window" value={formatPortfolioUsd(portfolio?.depositsUsd)} />
-                  <PortfolioMetric label="Fees Claimed" value={formatPortfolioUsd(portfolio?.feesClaimedUsd)} />
-                  <PortfolioMetric label="Claimable Fees" value={formatPortfolioUsd(portfolio?.claimableFeesUsd)} />
+                  <PortfolioMetric label={`Deposits · window (${pnlUnit})`} value={formatPortfolioValue(portfolio?.deposits, pnlUnit)} />
+                  <PortfolioMetric label={`Fees Claimed (${pnlUnit})`} value={formatPortfolioValue(portfolio?.feesClaimed, pnlUnit)} />
+                  <PortfolioMetric label={`Claimable Fees (${pnlUnit})`} value={formatPortfolioValue(portfolio?.claimableFees, pnlUnit)} />
                   <PortfolioMetric label="Active Bins" value={(positions?.length ?? 0).toLocaleString("en-US")} />
                 </div>
                 <div>
                   <div className="flex items-center gap-2">
-                    <MetricLabel>Total PnL · available history</MetricLabel>
+                    <MetricLabel>Total PnL · {pnlUnit} equivalent</MetricLabel>
                     <span className="rounded-sm bg-secondary px-1.5 py-0.5 text-[10px] text-muted-foreground">RPC window</span>
                   </div>
-                  <p className={`mt-2 font-mono text-2xl font-bold tabular-nums ${portfolio && portfolio.totalPnlUsd >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
-                    {formatSignedUsd(portfolio?.totalPnlUsd)}
+                  <p className={`mt-2 font-mono text-2xl font-bold tabular-nums ${portfolio && portfolio.totalPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                    {formatSignedPortfolioValue(portfolio?.totalPnl, pnlUnit)}
                   </p>
                   <div className="mt-4 grid grid-cols-2 gap-4">
                     <PortfolioMetric label="Win Rate" value={winRate === null ? "—" : `${winRate.toFixed(2)}%`} />
-                    <PortfolioMetric label="Biggest Realized Win" value={biggestWin > 0 ? formatPortfolioUsd(biggestWin) : "—"} />
+                    <PortfolioMetric label={`Biggest Realized Win (${pnlUnit})`} value={biggestWin > 0 ? formatPortfolioValue(biggestWin, pnlUnit) : "—"} />
                   </div>
                 </div>
               </div>
@@ -226,7 +209,7 @@ export default function PositionsPage() {
                 </div>
                 <div className="mb-3 flex items-center justify-between text-xs">
                   <span className="text-muted-foreground">Daily closed-position PnL + claimed fees</span>
-                  <span className={`font-mono font-semibold ${monthlyPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>Monthly: {formatSignedUsd(monthlyPnl)}</span>
+                  <span className={`font-mono font-semibold ${monthlyPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>Monthly: {formatSignedPortfolioValue(monthlyPnl, pnlUnit)}</span>
                 </div>
                 <div className="grid grid-cols-7 gap-1 text-center text-[10px] font-medium text-muted-foreground">
                   {WEEKDAYS.map((day) => <div key={day} className="py-1">{day}</div>)}
@@ -239,14 +222,14 @@ export default function PositionsPage() {
                     return (
                       <div
                         key={key}
-                        className={`flex min-h-14 flex-col border-t border-border/70 px-1.5 py-1 text-left sm:min-h-15.5 ${!currentMonth ? "opacity-30" : ""} ${pnl ? pnl.pnlUsd > 0 ? "border-l-2 border-l-emerald-400 bg-emerald-400/10" : pnl.pnlUsd < 0 ? "border-l-2 border-l-rose-400 bg-rose-400/10" : "bg-secondary/30" : "bg-background/30"}`}
+                        className={`flex min-h-14 flex-col border-t border-border/70 px-1.5 py-1 text-left sm:min-h-15.5 ${!currentMonth ? "opacity-30" : ""} ${pnl ? pnl.pnl > 0 ? "border-l-2 border-l-emerald-400 bg-emerald-400/10" : pnl.pnl < 0 ? "border-l-2 border-l-rose-400 bg-rose-400/10" : "bg-secondary/30" : "bg-background/30"}`}
                         data-testid={`portfolio-pnl-day-${key}`}
                       >
                         <span className="text-[10px] text-muted-foreground">{date.getDate()}</span>
                         {currentMonth && pnl ? (
                           <>
-                            <span className={`mt-auto truncate font-mono text-[10px] font-semibold ${pnl.pnlUsd >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
-                              {formatSignedUsd(pnl.pnlUsd)}
+                            <span className={`mt-auto truncate font-mono text-[10px] font-semibold ${pnl.pnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                              {formatSignedPortfolioValue(pnl.pnl, pnlUnit)}
                             </span>
                             <span className="truncate text-[9px] text-muted-foreground">{pnl.eventCount} event{pnl.eventCount === 1 ? "" : "s"}</span>
                           </>
@@ -266,12 +249,12 @@ export default function PositionsPage() {
           )}
           {portfolio && (portfolio.historyTruncated || portfolio.basisMissingCount > 0 || portfolio.historicalPriceGapCount > 0 || portfolio.unpricedPoolCount > 0) && (
             <p className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs leading-relaxed text-amber-200" role="status">
-              PnL can be partial{portfolio.basisMissingCount > 0 ? `; ${portfolio.basisMissingCount} position(s) have no matching deposit event in the available window` : ""}{portfolio.historicalPriceGapCount > 0 ? `; ${portfolio.historicalPriceGapCount} event cashflow(s) need historical token-X prices that are unavailable` : ""}{portfolio.unpricedPoolCount > 0 ? `; USD pricing is unavailable for ${portfolio.unpricedPoolCount} pool(s)` : ""}{portfolio.historyTruncated ? "; event pagination reached its safety limit" : ""}.
+              PnL can be partial{portfolio.basisMissingCount > 0 ? `; ${portfolio.basisMissingCount} position(s) have no matching deposit event in the available window` : ""}{portfolio.historicalPriceGapCount > 0 ? `; ${portfolio.historicalPriceGapCount} event cashflow(s) cannot be converted to ${portfolio.pnlUnit}` : ""}{portfolio.unpricedPoolCount > 0 ? `; no ${portfolio.pnlUnit} conversion is available for ${portfolio.unpricedPoolCount} pool(s)` : ""}{portfolio.historyTruncated ? "; event pagination reached its safety limit" : ""}.
             </p>
           )}
           {portfolio && (
             <p className="text-xs leading-relaxed text-muted-foreground">
-              {portfolio.historyWindow}. Active PnL uses current position value; realized USD PnL includes only cashflows with a known quote-token value. Historical token-X legs without a price source are excluded rather than estimated.
+              {portfolio.historyWindow}. PnL is shown in {portfolio.pnlUnit}; XLM amounts are equivalent values, while on-chain fee claims still transfer the pool&apos;s actual token X and token Y. Cashflows without a supported conversion are excluded rather than estimated.
             </p>
           )}
 
@@ -283,11 +266,12 @@ export default function PositionsPage() {
           {portfolioTab === "live" ? (
             <PortfolioLivePositions
               positions={positions ?? []}
+              pnlUnit={pnlUnit}
               onSelect={setSelectedPos}
               onExplore={() => { window.location.href = "/pools"; }}
             />
           ) : (
-            <PortfolioHistory positions={portfolio?.closedPositions ?? []} />
+            <PortfolioHistory positions={portfolio?.closedPositions ?? []} pnlUnit={pnlUnit} />
           )}
         </>
       )}
@@ -348,16 +332,18 @@ function monthKey(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
 }
 
-function formatPortfolioUsd(value: number | undefined): string {
+function formatPortfolioValue(value: number | undefined, unit: "USD" | "XLM"): string {
   return value === undefined || !Number.isFinite(value)
     ? "—"
-    : `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    : unit === "USD"
+    ? `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    : `${value.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 4 })} XLM`;
 }
 
-function formatSignedUsd(value: number | undefined): string {
+function formatSignedPortfolioValue(value: number | undefined, unit: "USD" | "XLM"): string {
   if (value === undefined || !Number.isFinite(value)) return "—";
   const sign = value > 0 ? "+" : value < 0 ? "-" : "";
-  return `${sign}${formatPortfolioUsd(Math.abs(value))}`;
+  return `${sign}${formatPortfolioValue(Math.abs(value), unit)}`;
 }
 
 function MetricLabel({ children }: { children: React.ReactNode }) {
@@ -375,10 +361,12 @@ function PortfolioMetric({ label, value }: { label: string; value: string }) {
 
 function PortfolioLivePositions({
   positions,
+  pnlUnit,
   onSelect,
   onExplore,
 }: {
   positions: Position[];
+  pnlUnit: "USD" | "XLM";
   onSelect: (position: Position) => void;
   onExplore: () => void;
 }) {
@@ -400,8 +388,8 @@ function PortfolioLivePositions({
         <thead className="bg-secondary/40 text-left text-xs text-muted-foreground">
           <tr>
             <th className="px-4 py-3 font-medium">Pool / Bin</th>
-            <th className="px-4 py-3 text-right font-medium">Current Value</th>
-            <th className="px-4 py-3 text-right font-medium">Claimable Fees</th>
+            <th className="px-4 py-3 text-right font-medium">Current Value ({pnlUnit})</th>
+            <th className="px-4 py-3 text-right font-medium">Claimable Fees ({pnlUnit})</th>
             <th className="px-4 py-3 text-right font-medium">Token X</th>
             <th className="px-4 py-3 text-right font-medium">Token Y</th>
             <th className="px-4 py-3 text-right font-medium">Shares</th>
@@ -432,8 +420,8 @@ function PortfolioLivePositions({
                   <p className="font-semibold">{tokenX}/{tokenY}</p>
                   <p className="mt-0.5 text-[10px] text-muted-foreground">DLMM · Bin #{binId}</p>
                 </td>
-                <td className="px-4 py-3 text-right font-mono tabular-nums">{formatPortfolioUsd(position.valueUsd)}</td>
-                <td className="px-4 py-3 text-right font-mono tabular-nums text-emerald-400">{formatPortfolioUsd(position.unrealizedFees)}</td>
+                <td className="px-4 py-3 text-right font-mono tabular-nums">{pnlUnit === "USD" ? formatPortfolioValue(position.valueUsd, pnlUnit) : formatPortfolioValue(position.valueXlm, pnlUnit)}</td>
+                <td className="px-4 py-3 text-right font-mono tabular-nums text-emerald-400">{pnlUnit === "USD" ? formatPortfolioValue(position.unrealizedFees, pnlUnit) : formatPortfolioValue(position.claimableFeesXlm, pnlUnit)}</td>
                 <td className="px-4 py-3 text-right font-mono text-xs tabular-nums">{position.liquidityX.toLocaleString("en-US", { maximumFractionDigits: 4 })} {tokenX}</td>
                 <td className="px-4 py-3 text-right font-mono text-xs tabular-nums">{position.liquidityY.toLocaleString("en-US", { maximumFractionDigits: 4 })} {tokenY}</td>
                 <td className="px-4 py-3 text-right font-mono text-xs tabular-nums">{(position.shares ?? 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}</td>
@@ -447,7 +435,7 @@ function PortfolioLivePositions({
   );
 }
 
-function PortfolioHistory({ positions }: { positions: PortfolioClosedPosition[] }) {
+function PortfolioHistory({ positions, pnlUnit }: { positions: PortfolioClosedPosition[]; pnlUnit: "USD" | "XLM" }) {
   if (positions.length === 0) {
     return <div className="border-y border-border py-12 text-center text-sm text-muted-foreground">No closed positions in the available RPC event window.</div>;
   }
@@ -458,10 +446,10 @@ function PortfolioHistory({ positions }: { positions: PortfolioClosedPosition[] 
           <tr>
             <th className="px-4 py-3 font-medium">Pool / Bin</th>
             <th className="px-4 py-3 font-medium">Opened / Closed</th>
-            <th className="px-4 py-3 text-right font-medium">Deposits</th>
-            <th className="px-4 py-3 text-right font-medium">Withdrawn</th>
-            <th className="px-4 py-3 text-right font-medium">Fees Claimed</th>
-            <th className="px-4 py-3 text-right font-medium">Realized PnL</th>
+            <th className="px-4 py-3 text-right font-medium">Deposits ({pnlUnit})</th>
+            <th className="px-4 py-3 text-right font-medium">Withdrawn ({pnlUnit})</th>
+            <th className="px-4 py-3 text-right font-medium">Fees Claimed ({pnlUnit})</th>
+            <th className="px-4 py-3 text-right font-medium">Realized PnL ({pnlUnit})</th>
             <th className="w-10 px-3 py-3" />
           </tr>
         </thead>
@@ -476,11 +464,11 @@ function PortfolioHistory({ positions }: { positions: PortfolioClosedPosition[] 
                 <p>{new Date(position.openedAt).toLocaleString()}</p>
                 <p className="mt-1">{new Date(position.closedAt).toLocaleString()}</p>
               </td>
-              <td className="px-4 py-3 text-right font-mono tabular-nums">{formatPortfolioUsd(position.depositsUsd)}</td>
-              <td className="px-4 py-3 text-right font-mono tabular-nums">{formatPortfolioUsd(position.withdrawnUsd)}</td>
-              <td className="px-4 py-3 text-right font-mono tabular-nums">{formatPortfolioUsd(position.feesClaimedUsd)}</td>
-              <td className={`px-4 py-3 text-right font-mono font-semibold tabular-nums ${position.pnlUsd >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
-                {formatSignedUsd(position.pnlUsd)}
+              <td className="px-4 py-3 text-right font-mono tabular-nums">{formatPortfolioValue(position.deposits, pnlUnit)}</td>
+              <td className="px-4 py-3 text-right font-mono tabular-nums">{formatPortfolioValue(position.withdrawn, pnlUnit)}</td>
+              <td className="px-4 py-3 text-right font-mono tabular-nums">{formatPortfolioValue(position.feesClaimed, pnlUnit)}</td>
+              <td className={`px-4 py-3 text-right font-mono font-semibold tabular-nums ${position.pnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                {formatSignedPortfolioValue(position.pnl, pnlUnit)}
               </td>
               <td className="px-3 py-3 text-right">
                 <a href={`https://stellar.expert/explorer/testnet/tx/${position.txHash}`} target="_blank" rel="noreferrer" aria-label={`View close transaction ${position.txHash}`} className="inline-flex text-muted-foreground hover:text-primary">

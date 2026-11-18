@@ -7,6 +7,7 @@
  */
 import type { PortfolioClosedPosition } from './portfolioClosedPosition';
 import type { PortfolioDailyPnl } from './portfolioDailyPnl';
+import type { PortfolioSummaryPnlUnit } from './portfolioSummaryPnlUnit';
 
 export interface PortfolioSummary {
   address: string;
@@ -20,15 +21,16 @@ export interface PortfolioSummary {
   historicalPriceGapCount: number;
   /** Pools excluded from USD PnL because no usable token price is available */
   unpricedPoolCount: number;
-  /** Current value of active positions using available token price references */
-  totalValueUsd: number;
-  /** Deposits observed in the available event window, valued in quote-token terms */
-  depositsUsd: number;
-  feesClaimedUsd: number;
-  claimableFeesUsd: number;
-  realizedPnlUsd: number;
-  unrealizedPnlUsd: number;
-  totalPnlUsd: number;
+  pnlUnit: PortfolioSummaryPnlUnit;
+  /** Current portfolio value, denominated in pnlUnit */
+  totalValue: number;
+  /** Deposits observed in the available event window, denominated in pnlUnit */
+  deposits: number;
+  feesClaimed: number;
+  claimableFees: number;
+  realizedPnl: number;
+  unrealizedPnl: number;
+  totalPnl: number;
   dailyPnl: PortfolioDailyPnl[];
   closedPositions: PortfolioClosedPosition[];
 }

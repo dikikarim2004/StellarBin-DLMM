@@ -8,6 +8,6 @@
 
 export interface PortfolioDailyPnl {
   date: Date;
-  pnlUsd: number;
+  pnl: number;
   eventCount: number;
 }

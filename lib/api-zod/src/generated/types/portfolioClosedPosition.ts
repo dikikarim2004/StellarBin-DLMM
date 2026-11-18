@@ -13,9 +13,9 @@ export interface PortfolioClosedPosition {
   binId: number;
   openedAt: Date;
   closedAt: Date;
-  depositsUsd: number;
-  withdrawnUsd: number;
-  feesClaimedUsd: number;
-  pnlUsd: number;
+  deposits: number;
+  withdrawn: number;
+  feesClaimed: number;
+  pnl: number;
   txHash: string;
 }

@@ -273,9 +273,17 @@ export interface PositionEvent {
   shares: string;
 }
 
+export type PortfolioSummaryPnlUnit = typeof PortfolioSummaryPnlUnit[keyof typeof PortfolioSummaryPnlUnit];
+
+
+export const PortfolioSummaryPnlUnit = {
+  USD: 'USD',
+  XLM: 'XLM',
+} as const;
+
 export interface PortfolioDailyPnl {
   date: string;
-  pnlUsd: number;
+  pnl: number;
   eventCount: number;
 }
 
@@ -286,10 +294,10 @@ export interface PortfolioClosedPosition {
   binId: number;
   openedAt: string;
   closedAt: string;
-  depositsUsd: number;
-  withdrawnUsd: number;
-  feesClaimedUsd: number;
-  pnlUsd: number;
+  deposits: number;
+  withdrawn: number;
+  feesClaimed: number;
+  pnl: number;
   txHash: string;
 }
 
@@ -305,15 +313,16 @@ export interface PortfolioSummary {
   historicalPriceGapCount: number;
   /** Pools excluded from USD PnL because no usable token price is available */
   unpricedPoolCount: number;
-  /** Current value of active positions using available token price references */
-  totalValueUsd: number;
-  /** Deposits observed in the available event window, valued in quote-token terms */
-  depositsUsd: number;
-  feesClaimedUsd: number;
-  claimableFeesUsd: number;
-  realizedPnlUsd: number;
-  unrealizedPnlUsd: number;
-  totalPnlUsd: number;
+  pnlUnit: PortfolioSummaryPnlUnit;
+  /** Current portfolio value, denominated in pnlUnit */
+  totalValue: number;
+  /** Deposits observed in the available event window, denominated in pnlUnit */
+  deposits: number;
+  feesClaimed: number;
+  claimableFees: number;
+  realizedPnl: number;
+  unrealizedPnl: number;
+  totalPnl: number;
   dailyPnl: PortfolioDailyPnl[];
   closedPositions: PortfolioClosedPosition[];
 }
@@ -364,6 +373,10 @@ export interface Position {
   liquidityY: number;
   valueUsd: number;
   unrealizedFees: number;
+  /** Current value converted to XLM when a direct or priced conversion is available */
+  valueXlm?: number;
+  /** Claimable fees converted to XLM when a direct or priced conversion is available */
+  claimableFeesXlm?: number;
   strategy?: PositionStrategy;
 }
 

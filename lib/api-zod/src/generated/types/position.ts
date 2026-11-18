@@ -23,5 +23,9 @@ export interface Position {
   liquidityY: number;
   valueUsd: number;
   unrealizedFees: number;
+  /** Current value converted to XLM when a direct or priced conversion is available */
+  valueXlm?: number;
+  /** Claimable fees converted to XLM when a direct or priced conversion is available */
+  claimableFeesXlm?: number;
   strategy?: PositionStrategy;
 }

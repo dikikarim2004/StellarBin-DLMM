@@ -29,6 +29,7 @@ export * from './poolStatsPoint';
 export * from './portfolioClosedPosition';
 export * from './portfolioDailyPnl';
 export * from './portfolioSummary';
+export * from './portfolioSummaryPnlUnit';
 export * from './position';
 export * from './positionEvent';
 export * from './positionEventAction';

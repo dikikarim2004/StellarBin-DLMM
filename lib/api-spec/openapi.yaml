@@ -791,7 +791,7 @@ components:
 
     PortfolioSummary:
       type: object
-      required: [address, asOf, historyWindow, historyTruncated, basisMissingCount, historicalPriceGapCount, unpricedPoolCount, totalValueUsd, depositsUsd, feesClaimedUsd, claimableFeesUsd, realizedPnlUsd, unrealizedPnlUsd, totalPnlUsd, dailyPnl, closedPositions]
+      required: [address, asOf, historyWindow, historyTruncated, basisMissingCount, historicalPriceGapCount, unpricedPoolCount, pnlUnit, totalValue, deposits, feesClaimed, claimableFees, realizedPnl, unrealizedPnl, totalPnl, dailyPnl, closedPositions]
       properties:
         address:
           type: string
@@ -812,21 +812,24 @@ components:
         unpricedPoolCount:
           type: integer
           description: Pools excluded from USD PnL because no usable token price is available
-        totalValueUsd:
+        pnlUnit:
+          type: string
+          enum: [USD, XLM]
+        totalValue:
           type: number
-          description: Current value of active positions using available token price references
-        depositsUsd:
+          description: Current portfolio value, denominated in pnlUnit
+        deposits:
           type: number
-          description: Deposits observed in the available event window, valued in quote-token terms
-        feesClaimedUsd:
+          description: Deposits observed in the available event window, denominated in pnlUnit
+        feesClaimed:
           type: number
-        claimableFeesUsd:
+        claimableFees:
           type: number
-        realizedPnlUsd:
+        realizedPnl:
           type: number
-        unrealizedPnlUsd:
+        unrealizedPnl:
           type: number
-        totalPnlUsd:
+        totalPnl:
           type: number
         dailyPnl:
           type: array
@@ -839,19 +842,19 @@ components:
 
     PortfolioDailyPnl:
       type: object
-      required: [date, pnlUsd, eventCount]
+      required: [date, pnl, eventCount]
       properties:
         date:
           type: string
           format: date
-        pnlUsd:
+        pnl:
           type: number
         eventCount:
           type: integer
 
     PortfolioClosedPosition:
       type: object
-      required: [id, poolId, poolName, binId, openedAt, closedAt, depositsUsd, withdrawnUsd, feesClaimedUsd, pnlUsd, txHash]
+      required: [id, poolId, poolName, binId, openedAt, closedAt, deposits, withdrawn, feesClaimed, pnl, txHash]
       properties:
         id:
           type: string
@@ -867,13 +870,13 @@ components:
         closedAt:
           type: string
           format: date-time
-        depositsUsd:
+        deposits:
           type: number
-        withdrawnUsd:
+        withdrawn:
           type: number
-        feesClaimedUsd:
+        feesClaimed:
           type: number
-        pnlUsd:
+        pnl:
           type: number
         txHash:
           type: string
@@ -936,6 +939,12 @@ components:
           type: number
         unrealizedFees:
           type: number
+        valueXlm:
+          type: number
+          description: Current value converted to XLM when a direct or priced conversion is available
+        claimableFeesXlm:
+          type: number
+          description: Claimable fees converted to XLM when a direct or priced conversion is available
         strategy:
           type: string
           enum: [spot, curve, bid_ask]

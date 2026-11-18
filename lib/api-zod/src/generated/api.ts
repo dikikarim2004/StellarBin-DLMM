@@ -435,6 +435,8 @@ export const GetUserPositionsResponseItem = zod.object({
   "liquidityY": zod.number(),
   "valueUsd": zod.number(),
   "unrealizedFees": zod.number(),
+  "valueXlm": zod.number().optional().describe('Current value converted to XLM when a direct or priced conversion is available'),
+  "claimableFeesXlm": zod.number().optional().describe('Claimable fees converted to XLM when a direct or priced conversion is available'),
   "strategy": zod.enum(['spot', 'curve', 'bid_ask']).optional()
 })
 export const GetUserPositionsResponse = zod.array(GetUserPositionsResponseItem)
@@ -455,16 +457,17 @@ export const GetPortfolioSummaryResponse = zod.object({
   "basisMissingCount": zod.number().describe('Active or closed positions without a matching deposit event in the available RPC window'),
   "historicalPriceGapCount": zod.number().describe('Event cashflows containing token X that cannot be valued in USD without historical token prices'),
   "unpricedPoolCount": zod.number().describe('Pools excluded from USD PnL because no usable token price is available'),
-  "totalValueUsd": zod.number().describe('Current value of active positions using available token price references'),
-  "depositsUsd": zod.number().describe('Deposits observed in the available event window, valued in quote-token terms'),
-  "feesClaimedUsd": zod.number(),
-  "claimableFeesUsd": zod.number(),
-  "realizedPnlUsd": zod.number(),
-  "unrealizedPnlUsd": zod.number(),
-  "totalPnlUsd": zod.number(),
+  "pnlUnit": zod.enum(['USD', 'XLM']),
+  "totalValue": zod.number().describe('Current portfolio value, denominated in pnlUnit'),
+  "deposits": zod.number().describe('Deposits observed in the available event window, denominated in pnlUnit'),
+  "feesClaimed": zod.number(),
+  "claimableFees": zod.number(),
+  "realizedPnl": zod.number(),
+  "unrealizedPnl": zod.number(),
+  "totalPnl": zod.number(),
   "dailyPnl": zod.array(zod.object({
   "date": zod.coerce.date(),
-  "pnlUsd": zod.number(),
+  "pnl": zod.number(),
   "eventCount": zod.number()
 })),
   "closedPositions": zod.array(zod.object({
@@ -474,10 +477,10 @@ export const GetPortfolioSummaryResponse = zod.object({
   "binId": zod.number(),
   "openedAt": zod.coerce.date(),
   "closedAt": zod.coerce.date(),
-  "depositsUsd": zod.number(),
-  "withdrawnUsd": zod.number(),
-  "feesClaimedUsd": zod.number(),
-  "pnlUsd": zod.number(),
+  "deposits": zod.number(),
+  "withdrawn": zod.number(),
+  "feesClaimed": zod.number(),
+  "pnl": zod.number(),
   "txHash": zod.string()
 }))
 })

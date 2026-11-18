@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { listPools, useGetPoolRecentSwaps } from "@workspace/api-client-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -34,8 +35,14 @@ import { useWallet } from "@/contexts/wallet";
 import { WalletModal } from "@/components/wallet-modal";
 import { DexSwapPanel } from "@/components/dex-swap-panel";
 import { useToast } from "@/hooks/use-toast";
-import { DEMO_POOL_TOKENS, DEFAULT_POOL_ID, TOKEN_X } from "@/lib/contracts";
+import { DEMO_POOL_TOKENS, DEFAULT_POOL_ID, TOKEN_X, TOKEN_Y } from "@/lib/contracts";
 import { USDC_ISSUER } from "@/lib/trustline";
+import {
+  buildEstablishTrustlineTransaction,
+  hasUsdcTrustline,
+  submitSignedClassicTransaction,
+  waitForUsdcTrustline,
+} from "@/lib/trustline";
 import { displayToStroops, stroopsToDisplay } from "@/lib/stellar";
 import {
   getOnChainSwapQuote,
@@ -105,6 +112,14 @@ export default function SwapPage() {
   const allTokens = [...tokensByAddress.values()];
   const tokenIn = allTokens.find((t) => sameTokenAddress(t.address, tokenInId));
   const tokenOut = allTokens.find((t) => sameTokenAddress(t.address, tokenOutId));
+  const usdcTrustlineQuery = useQuery({
+    queryKey: ["usdc-trustline", wallet.address],
+    queryFn: () => hasUsdcTrustline(wallet.address!),
+    enabled: !!wallet.address && tokenOutId === TOKEN_Y.address,
+    staleTime: 30_000,
+  });
+  const needsUsdcTrustline =
+    tokenOutId === TOKEN_Y.address && usdcTrustlineQuery.data === false;
   const tokenInChoices = getPairedTokens(poolCatalog, tokenOutId, allTokens);
   const tokenOutChoices = getPairedTokens(poolCatalog, tokenInId, allTokens);
   const effectiveSlippage = customSlippage || slippage;
@@ -230,13 +245,30 @@ export default function SwapPage() {
     }
     if (!quote) return;
     setSigning(true);
+    let phase: "trustline" | "swap" = "swap";
     try {
+      const callerAddress = wallet.address;
+      if (tokenOutId === TOKEN_Y.address && !(await hasUsdcTrustline(callerAddress))) {
+        phase = "trustline";
+        toast({
+          title: "USDC trustline required",
+          description: "Approve the wallet request to add the trustline before the swap.",
+        });
+        const trustlineTransaction = await buildEstablishTrustlineTransaction(callerAddress);
+        const signedTrustlineXdr = await wallet.signTransaction(trustlineTransaction.toXDR());
+        await submitSignedClassicTransaction(signedTrustlineXdr);
+        await waitForUsdcTrustline(callerAddress);
+        await usdcTrustlineQuery.refetch();
+        await wallet.refreshBalance();
+      }
+
+      phase = "swap";
       const slippageBps = BigInt(Math.round(parseFloat(effectiveSlippage) * 100));
       const routedPoolId = bestPoolId ?? DEFAULT_POOL_ID;
       const amountInStroops = displayToStroops(amountIn);
       const minAmountOut = quote.amountOut - (quote.amountOut * slippageBps) / 10_000n;
       const prepared = await buildSwapTransaction(
-        wallet.address, bestXToY ?? true, amountInStroops, minAmountOut, routedPoolId
+        callerAddress, bestXToY ?? true, amountInStroops, minAmountOut, routedPoolId
       );
       const signedXdr = await wallet.signTransaction(prepared.toXDR());
       const result = await submitSignedSwap(signedXdr);
@@ -254,7 +286,7 @@ export default function SwapPage() {
     } catch (err) {
       toast({
         variant: "destructive",
-        title: "Swap failed",
+        title: phase === "trustline" ? "USDC trustline setup failed" : "Swap failed",
         description: err instanceof Error ? err.message : "Unknown error",
       });
     } finally {
@@ -473,7 +505,7 @@ export default function SwapPage() {
           <Button
             className="w-full h-12 text-base font-semibold"
             onClick={handleConfirmSwap}
-            disabled={!canSwap || quotePending || signing || !quote}
+            disabled={!canSwap || quotePending || signing || !quote || (tokenOutId === TOKEN_Y.address && usdcTrustlineQuery.isLoading)}
             data-testid="button-confirm-swap"
           >
             {signing ? (
@@ -489,7 +521,7 @@ export default function SwapPage() {
             ) : quote ? (
               <>
                 <CheckCircle2 className="w-4 h-4 mr-2" />
-                Confirm Swap
+                {needsUsdcTrustline ? "Add USDC trustline & Swap" : "Confirm Swap"}
               </>
             ) : (
               "Swap"

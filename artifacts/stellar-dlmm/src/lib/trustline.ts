@@ -86,3 +86,16 @@ export async function submitSignedClassicTransaction(signedXdr: string): Promise
   const result = await server.submitTransaction(tx);
   return result.hash;
 }
+
+/** Waits until Horizon has indexed the newly submitted trustline. */
+export async function waitForUsdcTrustline(
+  address: string,
+  timeoutMs = 30_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await hasUsdcTrustline(address)) return;
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+  }
+  throw new Error("The USDC trustline was not visible on Testnet before timeout.");
+}

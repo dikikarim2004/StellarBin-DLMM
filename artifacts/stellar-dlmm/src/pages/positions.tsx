@@ -137,24 +137,7 @@ export default function PositionsPage() {
             Current DLMM positions and PnL from available on-chain events.
           </p>
         </div>
-        {wallet.connected ? (
-          <button
-            onClick={() => setWalletModalOpen(true)}
-            className="flex items-center gap-2 bg-secondary hover:bg-secondary/80 border border-border px-3 py-2 rounded-md text-sm transition-colors self-start"
-            data-testid="button-wallet-address"
-          >
-            <div className="w-2 h-2 rounded-full bg-green-400" />
-            <span className="font-mono">{wallet.shortAddress}</span>
-            {wallet.xlmBalance && (
-              <span className="text-muted-foreground text-xs">· {wallet.xlmBalance} XLM</span>
-            )}
-          </button>
-        ) : (
-          <Button onClick={() => setWalletModalOpen(true)} className="self-start" data-testid="button-connect-positions">
-            <Wallet className="w-4 h-4 mr-2" />
-            Connect Wallet
-          </Button>
-        )}
+        
       </header>
 
       {/* Not connected */}

@@ -198,6 +198,15 @@ export function DexSwapPanel() {
     quote && Number(amountIn) > 0
       ? Number(quote.destinationAmount) / Number(amountIn)
       : null;
+  const maxXlmBalance =
+    wallet.xlmBalance !== null && Number.isFinite(Number(wallet.xlmBalance))
+      ? wallet.xlmBalance
+      : null;
+
+  function handleMaxAmount() {
+    if (!maxXlmBalance || Number(maxXlmBalance) <= 0) return;
+    setAmountIn(maxXlmBalance);
+  }
 
   return (
     <Card className="p-4 border-border bg-card space-y-3" data-testid="card-dex-swap">
@@ -216,6 +225,22 @@ export function DexSwapPanel() {
           />
           <span className="font-semibold text-sm px-3 py-2 rounded-md bg-muted">XLM</span>
         </div>
+        {wallet.connected && (
+          <div className="flex items-center justify-end gap-1.5 pt-0.5 text-xs text-muted-foreground">
+            <span className="font-mono tabular-nums" data-testid="text-dex-balance-in">
+              Balance: {wallet.xlmBalance ?? "—"} XLM
+            </span>
+            <button
+              type="button"
+              onClick={handleMaxAmount}
+              disabled={!maxXlmBalance || Number(maxXlmBalance) <= 0 || submitting}
+              className="font-semibold text-primary hover:underline disabled:cursor-not-allowed disabled:opacity-40 disabled:no-underline"
+              data-testid="button-dex-max-amount"
+            >
+              Max
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="flex justify-center">

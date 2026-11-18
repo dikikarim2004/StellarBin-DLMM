@@ -31,6 +31,7 @@ import type {
   Pool,
   PoolDetail,
   PoolStats,
+  PortfolioSummary,
   Position,
   PositionEvent,
   ProtocolSummary,
@@ -1211,6 +1212,83 @@ export function useGetUserPositions<TData = Awaited<ReturnType<typeof getUserPos
  ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
 
   const queryOptions = getGetUserPositionsQueryOptions(address,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getGetPortfolioSummaryUrl = (address: string,) => {
+
+
+
+
+  return `/api/portfolio/${address}`
+}
+
+/**
+ * @summary Get current LP portfolio value and PnL from available on-chain events
+ */
+export const getPortfolioSummary = async (address: string, options?: RequestInit): Promise<PortfolioSummary> => {
+
+  return customFetch<PortfolioSummary>(getGetPortfolioSummaryUrl(address),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetPortfolioSummaryQueryKey = (address: string,) => {
+    return [
+    `/api/portfolio/${address}`
+    ] as const;
+    }
+
+
+export const getGetPortfolioSummaryQueryOptions = <TData = Awaited<ReturnType<typeof getPortfolioSummary>>, TError = ErrorType<unknown>>(address: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getPortfolioSummary>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetPortfolioSummaryQueryKey(address);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getPortfolioSummary>>> = ({ signal }) => getPortfolioSummary(address, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: address !== null && address !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getPortfolioSummary>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetPortfolioSummaryQueryResult = NonNullable<Awaited<ReturnType<typeof getPortfolioSummary>>>
+export type GetPortfolioSummaryQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary Get current LP portfolio value and PnL from available on-chain events
+ */
+
+export function useGetPortfolioSummary<TData = Awaited<ReturnType<typeof getPortfolioSummary>>, TError = ErrorType<unknown>>(
+ address: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getPortfolioSummary>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetPortfolioSummaryQueryOptions(address,options)
 
   const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
 

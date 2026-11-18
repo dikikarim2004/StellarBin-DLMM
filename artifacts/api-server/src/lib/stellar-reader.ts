@@ -972,7 +972,7 @@ export interface PositionEventRecord {
   txHash: string;
   timestamp: string;
   address: string;
-  action: "add" | "close";
+  action: "add" | "close" | "claim";
   binId: number;
   amountX: string;
   amountY: string;
@@ -1052,6 +1052,309 @@ export async function getPoolPositionEvents(
     positionEventsCache.set(key, cached);
   }
   return cached();
+}
+
+export interface PortfolioDailyPnlRecord {
+  date: string;
+  pnlUsd: number;
+  eventCount: number;
+}
+
+export interface PortfolioClosedPositionRecord {
+  id: string;
+  poolId: string;
+  poolName: string;
+  binId: number;
+  openedAt: string;
+  closedAt: string;
+  depositsUsd: number;
+  withdrawnUsd: number;
+  feesClaimedUsd: number;
+  pnlUsd: number;
+  txHash: string;
+}
+
+export interface PortfolioSummaryRecord {
+  address: string;
+  asOf: string;
+  historyWindow: string;
+  historyTruncated: boolean;
+  basisMissingCount: number;
+  historicalPriceGapCount: number;
+  unpricedPoolCount: number;
+  totalValueUsd: number;
+  depositsUsd: number;
+  feesClaimedUsd: number;
+  claimableFeesUsd: number;
+  realizedPnlUsd: number;
+  unrealizedPnlUsd: number;
+  totalPnlUsd: number;
+  dailyPnl: PortfolioDailyPnlRecord[];
+  closedPositions: PortfolioClosedPositionRecord[];
+}
+
+interface PortfolioChainEvent extends PositionEventRecord {
+  poolId: number;
+  ledger: number;
+}
+
+const PORTFOLIO_EVENT_PAGE_SIZE = 200;
+const PORTFOLIO_EVENT_MAX_PAGES = 20;
+
+async function readPortfolioEvents(
+  poolId: number,
+  address: string,
+  startLedger: number,
+): Promise<{ events: PortfolioChainEvent[]; truncated: boolean }> {
+  const eventTypes = [
+    { name: "ADD_LIQ", action: "add" as const },
+    { name: "REM_LIQ", action: "close" as const },
+    { name: "CLAIM_FEE", action: "claim" as const },
+  ];
+  const poolTopic = poolIdArg(poolId).toXDR("base64");
+  const filters: rpc.Api.EventFilter[] = eventTypes.map(({ name }) => ({
+    type: "contract",
+    contractIds: [DLMM_CONTRACT_ID],
+    topics: [[xdr.ScVal.scvSymbol(name).toXDR("base64"), poolTopic, "*"]],
+  }));
+
+  const events: PortfolioChainEvent[] = [];
+  let cursor: string | undefined;
+  let truncated = false;
+  for (let page = 0; page < PORTFOLIO_EVENT_MAX_PAGES; page++) {
+    const response = cursor
+      ? await getRpc().getEvents({ filters, cursor, limit: PORTFOLIO_EVENT_PAGE_SIZE })
+      : await getRpc().getEvents({ filters, startLedger, limit: PORTFOLIO_EVENT_PAGE_SIZE });
+    for (const event of response.events) {
+      try {
+        const [eventName, rawPoolId, rawBinId] = event.topic.map((topic) => scValToNative(topic)) as [
+          string,
+          bigint | number,
+          bigint | number,
+        ];
+        if (Number(rawPoolId) !== poolId) continue;
+        const payload = scValToNative(event.value) as [string, bigint, bigint, bigint?];
+        const [eventAddress, amountX, amountY, shares = 0n] = payload;
+        if (eventAddress !== address) continue;
+        const eventType = eventTypes.find((candidate) => candidate.name === eventName);
+        if (!eventType) continue;
+        events.push({
+          poolId,
+          ledger: event.ledger,
+          txHash: event.txHash,
+          timestamp: event.ledgerClosedAt,
+          address: eventAddress,
+          action: eventType.action,
+          binId: Number(rawBinId),
+          amountX: String(amountX),
+          amountY: String(amountY),
+          shares: String(shares),
+        });
+      } catch {
+        // Ignore malformed user events without discarding other portfolio history.
+      }
+    }
+    if (response.events.length < PORTFOLIO_EVENT_PAGE_SIZE) break;
+    if (page === PORTFOLIO_EVENT_MAX_PAGES - 1) {
+      truncated = true;
+      break;
+    }
+    if (!response.cursor || response.cursor === cursor) {
+      truncated = true;
+      break;
+    }
+    cursor = response.cursor;
+  }
+  events.sort((first, second) => first.ledger - second.ledger);
+  return { events, truncated };
+}
+
+function rawAmount(value: string): number {
+  return Number(BigInt(value)) / 10 ** SCALAR;
+}
+
+export async function getPortfolioSummary(address: string): Promise<PortfolioSummaryRecord> {
+  const poolRecords = await getAllDlmmPools();
+  const poolsById = new Map(poolRecords.map((pool) => [pool.dlmmPoolId!, pool]));
+  const positions = await getUserPositions(address);
+  const latestLedger = await getLatestLedgerSequence();
+  const startLedger = Math.max(1, latestLedger - RECENT_SWAP_LOOKBACK_LEDGERS);
+  const poolEvents = await Promise.all(
+    poolRecords.map(async (pool) => {
+      const { events, truncated } = await readPortfolioEvents(
+        pool.dlmmPoolId!,
+        address,
+        startLedger,
+      );
+      return { poolId: pool.dlmmPoolId!, events, truncated };
+    }),
+  );
+
+  const historyTruncated = poolEvents.some((result) => result.truncated);
+  const dailyPnl = new Map<string, { pnlUsd: number; eventCount: number }>();
+  const closedPositions: PortfolioClosedPositionRecord[] = [];
+  const openCycles = new Map<string, {
+    pool: PoolRecord;
+    binId: number;
+    openedAt: string;
+    depositsUsd: number;
+    feesClaimedUsd: number;
+    priced: boolean;
+  }>();
+  let depositsUsd = 0;
+  let feesClaimedUsd = 0;
+  let realizedPnlUsd = 0;
+  let unpricedPoolCount = 0;
+  let basisMissingCount = 0;
+  let historicalPriceGapCount = 0;
+  const unpricedPoolIds = new Set<number>();
+
+  function addDailyPnl(timestamp: string, pnl: number) {
+    const date = timestamp.slice(0, 10);
+    const day = dailyPnl.get(date) ?? { pnlUsd: 0, eventCount: 0 };
+    day.pnlUsd += pnl;
+    day.eventCount++;
+    dailyPnl.set(date, day);
+  }
+
+  for (const result of poolEvents) {
+    const pool = poolsById.get(result.poolId);
+    if (!pool) continue;
+    for (const event of result.events) {
+      const key = `${result.poolId}:${event.binId}`;
+      const amountX = rawAmount(event.amountX);
+      const amountY = rawAmount(event.amountY);
+      const eventUsd = amountX === 0 && pool.tokenY.price > 0
+        ? amountY * pool.tokenY.price
+        : null;
+      let cycle = openCycles.get(key);
+
+      if (event.action === "add") {
+        if (!cycle) {
+          cycle = {
+            pool,
+            binId: event.binId,
+            openedAt: event.timestamp,
+            depositsUsd: 0,
+            feesClaimedUsd: 0,
+            priced: eventUsd !== null,
+          };
+          openCycles.set(key, cycle);
+        }
+        if (eventUsd === null || pool.tokenY.price <= 0) {
+          cycle.priced = false;
+          if (amountX > 0) historicalPriceGapCount++;
+          else unpricedPoolIds.add(result.poolId);
+        } else {
+          cycle.depositsUsd += eventUsd;
+          depositsUsd += eventUsd;
+        }
+      } else if (event.action === "claim") {
+        if (eventUsd === null || pool.tokenY.price <= 0) {
+          if (amountX > 0) {
+            historicalPriceGapCount++;
+            if (cycle) cycle.priced = false;
+          } else {
+            unpricedPoolIds.add(result.poolId);
+          }
+          continue;
+        }
+        const feeQuoteUsd = eventUsd;
+        feesClaimedUsd += feeQuoteUsd;
+        realizedPnlUsd += feeQuoteUsd;
+        addDailyPnl(event.timestamp, feeQuoteUsd);
+        if (cycle) {
+          cycle.feesClaimedUsd += feeQuoteUsd;
+        }
+      } else {
+        if (!cycle) {
+          basisMissingCount++;
+          continue;
+        }
+        if (!cycle.priced) {
+          openCycles.delete(key);
+          continue;
+        }
+        if (eventUsd === null) {
+          if (amountX > 0) historicalPriceGapCount++;
+          else unpricedPoolIds.add(result.poolId);
+          openCycles.delete(key);
+          continue;
+        }
+        const pnlUsd = eventUsd - cycle.depositsUsd;
+        realizedPnlUsd += pnlUsd;
+        addDailyPnl(event.timestamp, pnlUsd);
+        closedPositions.push({
+          id: `${event.txHash}-${event.poolId}-${event.binId}`,
+          poolId: dlmmPoolRecordId(event.poolId),
+          poolName: `${pool.tokenX.symbol}/${pool.tokenY.symbol}`,
+          binId: event.binId,
+          openedAt: cycle.openedAt,
+          closedAt: event.timestamp,
+          depositsUsd: cycle.depositsUsd,
+          withdrawnUsd: eventUsd,
+          feesClaimedUsd: cycle.feesClaimedUsd,
+          pnlUsd: pnlUsd + cycle.feesClaimedUsd,
+          txHash: event.txHash,
+        });
+        openCycles.delete(key);
+      }
+    }
+  }
+
+  let claimableFeesUsd = 0;
+  let totalValueUsd = 0;
+  let unrealizedPnlUsd = 0;
+  const activePositionKeys = new Set<string>();
+  for (const position of positions) {
+    const poolId = position.pool.dlmmPoolId;
+    if (poolId === undefined) continue;
+    const binId = position.binId;
+    const key = `${poolId}:${binId}`;
+    activePositionKeys.add(key);
+    totalValueUsd += position.valueUsd + position.unrealizedFees;
+    claimableFeesUsd += position.unrealizedFees;
+    if (position.pool.tokenY.price <= 0) unpricedPoolIds.add(poolId);
+    const cycle = openCycles.get(key);
+    if (!cycle) {
+      basisMissingCount++;
+      continue;
+    }
+    if (!cycle.priced) {
+      unpricedPoolIds.add(poolId);
+      continue;
+    }
+    unrealizedPnlUsd += position.valueUsd + position.unrealizedFees - cycle.depositsUsd;
+  }
+
+  for (const key of openCycles.keys()) {
+    if (!activePositionKeys.has(key)) {
+      openCycles.delete(key);
+    }
+  }
+
+  unpricedPoolCount = unpricedPoolIds.size;
+  const asOf = new Date().toISOString();
+  return {
+    address,
+    asOf,
+    historyWindow: "Latest 9,000 ledgers; limited by Soroban RPC retention, not all-time",
+    historyTruncated,
+    basisMissingCount,
+    historicalPriceGapCount,
+    unpricedPoolCount,
+    totalValueUsd,
+    depositsUsd,
+    feesClaimedUsd,
+    claimableFeesUsd,
+    realizedPnlUsd,
+    unrealizedPnlUsd,
+    totalPnlUsd: realizedPnlUsd + unrealizedPnlUsd,
+    dailyPnl: [...dailyPnl.entries()]
+      .map(([date, value]) => ({ date, ...value }))
+      .sort((first, second) => first.date.localeCompare(second.date)),
+    closedPositions: closedPositions.slice(-100).reverse(),
+  };
 }
 
 // ---------------------------------------------------------------------------

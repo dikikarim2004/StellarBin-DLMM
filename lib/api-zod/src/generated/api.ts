@@ -440,3 +440,46 @@ export const GetUserPositionsResponseItem = zod.object({
 export const GetUserPositionsResponse = zod.array(GetUserPositionsResponseItem)
 
 
+/**
+ * @summary Get current LP portfolio value and PnL from available on-chain events
+ */
+export const GetPortfolioSummaryParams = zod.object({
+  "address": zod.coerce.string()
+})
+
+export const GetPortfolioSummaryResponse = zod.object({
+  "address": zod.string(),
+  "asOf": zod.coerce.date(),
+  "historyWindow": zod.string().describe('Available Soroban RPC event range; not an all-time archive'),
+  "historyTruncated": zod.boolean(),
+  "basisMissingCount": zod.number().describe('Active or closed positions without a matching deposit event in the available RPC window'),
+  "historicalPriceGapCount": zod.number().describe('Event cashflows containing token X that cannot be valued in USD without historical token prices'),
+  "unpricedPoolCount": zod.number().describe('Pools excluded from USD PnL because no usable token price is available'),
+  "totalValueUsd": zod.number().describe('Current value of active positions using available token price references'),
+  "depositsUsd": zod.number().describe('Deposits observed in the available event window, valued in quote-token terms'),
+  "feesClaimedUsd": zod.number(),
+  "claimableFeesUsd": zod.number(),
+  "realizedPnlUsd": zod.number(),
+  "unrealizedPnlUsd": zod.number(),
+  "totalPnlUsd": zod.number(),
+  "dailyPnl": zod.array(zod.object({
+  "date": zod.coerce.date(),
+  "pnlUsd": zod.number(),
+  "eventCount": zod.number()
+})),
+  "closedPositions": zod.array(zod.object({
+  "id": zod.string(),
+  "poolId": zod.string(),
+  "poolName": zod.string(),
+  "binId": zod.number(),
+  "openedAt": zod.coerce.date(),
+  "closedAt": zod.coerce.date(),
+  "depositsUsd": zod.number(),
+  "withdrawnUsd": zod.number(),
+  "feesClaimedUsd": zod.number(),
+  "pnlUsd": zod.number(),
+  "txHash": zod.string()
+}))
+})
+
+

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { scValToNative } from "@stellar/stellar-sdk";
 import {
@@ -6,8 +6,10 @@ import {
   useGetPoolBins,
   getGetUserPositionsQueryKey,
   getGetPoolBinsQueryKey,
+  useGetPortfolioSummary,
+  getGetPortfolioSummaryQueryKey,
 } from "@workspace/api-client-react";
-import type { Position } from "@workspace/api-client-react";
+import type { Position, PortfolioClosedPosition } from "@workspace/api-client-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -28,6 +30,9 @@ import {
   Minus,
   Info,
   Sparkles,
+  CalendarDays,
+  ChevronLeft,
+  ExternalLink,
 } from "lucide-react";
 import {
   BarChart,
@@ -76,6 +81,10 @@ export default function PositionsPage() {
   const [walletModalOpen, setWalletModalOpen] = useState(false);
   const [selectedPos, setSelectedPos] = useState<Position | null>(null);
   const [closeTarget, setCloseTarget] = useState<CloseTarget | null>(null);
+  const [portfolioTab, setPortfolioTab] = useState<"live" | "historical">("live");
+  const [calendarMonth, setCalendarMonth] = useState(
+    () => new Date(new Date().getFullYear(), new Date().getMonth(), 1),
+  );
 
   const address = wallet.connected ? wallet.address ?? "" : "";
 
@@ -85,21 +94,47 @@ export default function PositionsPage() {
       enabled: wallet.connected && !!address,
     },
   });
+  const {
+    data: portfolio,
+    isLoading: portfolioLoading,
+    isError: portfolioError,
+  } = useGetPortfolioSummary(address, {
+    query: {
+      queryKey: getGetPortfolioSummaryQueryKey(address),
+      enabled: wallet.connected && !!address,
+    },
+  });
+
+  const calendarCells = useMemo(() => getCalendarCells(calendarMonth), [calendarMonth]);
+  const dailyPnl = useMemo(
+    () => new Map((portfolio?.dailyPnl ?? []).map((entry) => [entry.date, entry])),
+    [portfolio?.dailyPnl],
+  );
+  const monthlyPnl = portfolio?.dailyPnl
+    .filter((entry) => entry.date.startsWith(monthKey(calendarMonth)))
+    .reduce((sum, entry) => sum + entry.pnlUsd, 0) ?? 0;
+  const closedPositions = portfolio?.closedPositions ?? [];
+  const wins = closedPositions.filter((position) => position.pnlUsd > 0);
+  const winRate = closedPositions.length > 0 ? (wins.length / closedPositions.length) * 100 : null;
+  const biggestWin = closedPositions.reduce(
+    (best, position) => Math.max(best, position.pnlUsd),
+    0,
+  );
 
   function refetchPositions() {
     if (address) {
       queryClient.invalidateQueries({ queryKey: getGetUserPositionsQueryKey(address) });
+      queryClient.invalidateQueries({ queryKey: getGetPortfolioSummaryQueryKey(address) });
     }
   }
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-3">
+    <div className="space-y-5" data-testid="page-portfolio">
+      <header className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">Your Positions</h1>
-          <p className="text-muted-foreground mt-1 text-sm sm:text-base">
-            Live per-bin liquidity positions read directly from the DLMM contract on Stellar testnet.
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">Portfolio</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Current DLMM positions and PnL from available on-chain events.
           </p>
         </div>
         {wallet.connected ? (
@@ -120,131 +155,140 @@ export default function PositionsPage() {
             Connect Wallet
           </Button>
         )}
-      </div>
+      </header>
 
       {/* Not connected */}
       {!wallet.connected ? (
-        <Card className="p-12 flex flex-col items-center justify-center text-center bg-card border-dashed">
-          <div className="w-16 h-16 bg-secondary rounded-full flex items-center justify-center mb-4">
-            <Wallet className="w-8 h-8 text-muted-foreground" />
-          </div>
-          <h3 className="text-xl font-bold mb-2">Connect your wallet</h3>
-          <p className="text-muted-foreground mb-6 max-w-sm">
-            Your positions are read live from the on-chain DLMM contract for your address. Connect a
-            wallet to see them.
+        <Card className="flex flex-col items-center justify-center border-dashed bg-card px-6 py-16 text-center">
+          <Wallet className="mb-4 h-10 w-10 text-muted-foreground" />
+          <h2 className="text-lg font-semibold">Connect your wallet</h2>
+          <p className="mt-2 max-w-md text-sm text-muted-foreground">
+            Portfolio positions and available PnL history are read for the connected Stellar account.
           </p>
-          <Button onClick={() => setWalletModalOpen(true)} data-testid="button-connect-empty">
-            <Wallet className="w-4 h-4 mr-2" />
-            Connect Wallet
+          <Button className="mt-5" onClick={() => setWalletModalOpen(true)} data-testid="button-connect-empty">
+            <Wallet className="mr-2 h-4 w-4" />Connect Wallet
           </Button>
         </Card>
-      ) : isLoading ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {[...Array(4)].map((_, i) => <Skeleton key={i} className="h-52 w-full" />)}
-        </div>
-      ) : !positions || positions.length === 0 ? (
-        <Card className="p-12 flex flex-col items-center justify-center text-center bg-card border-dashed">
-          <div className="w-16 h-16 bg-secondary rounded-full flex items-center justify-center mb-4">
-            <Coins className="w-8 h-8 text-muted-foreground" />
-          </div>
-          <h3 className="text-xl font-bold mb-2">No active positions</h3>
-          <p className="text-muted-foreground mb-6 max-w-xs">
-            Provide liquidity to the DLMM pool to start earning a pro-rata share of every swap.
-          </p>
-          <Link href="/pools">
-            <Button data-testid="button-explore-pools">
-              Explore Pools <ChevronRight className="w-4 h-4 ml-1" />
-            </Button>
-          </Link>
-        </Card>
+      ) : isLoading || portfolioLoading ? (
+        <Skeleton className="h-105 w-full" />
       ) : (
         <>
-          {/* Summary strip */}
-          <div className="grid grid-cols-3 gap-3">
-            <SummaryCard
-              label="Total Value"
-              value={`$${positions.reduce((s, p) => s + p.valueUsd, 0).toLocaleString("en", { maximumFractionDigits: 2 })}`}
-            />
-            <SummaryCard label="Bins" value={`${positions.length}`} />
-            <SummaryCard
-              label="Total Shares"
-              value={positions.reduce((s, p) => s + (p.shares ?? 0), 0).toLocaleString("en", { maximumFractionDigits: 0 })}
-            />
+          <section className="overflow-hidden rounded-md border border-border bg-card" data-testid="portfolio-summary">
+            <div className="grid lg:grid-cols-[320px_minmax(0,1fr)]">
+              <div className="space-y-5 border-b border-border p-5 lg:border-b-0 lg:border-r">
+                <div>
+                  <MetricLabel>Total Portfolio Value</MetricLabel>
+                  <p className="mt-1 font-mono text-3xl font-bold tabular-nums">{formatPortfolioUsd(portfolio?.totalValueUsd)}</p>
+                </div>
+                <div className="grid grid-cols-2 gap-4 border-b border-border pb-5">
+                  <PortfolioMetric label="Deposits · event window" value={formatPortfolioUsd(portfolio?.depositsUsd)} />
+                  <PortfolioMetric label="Fees Claimed" value={formatPortfolioUsd(portfolio?.feesClaimedUsd)} />
+                  <PortfolioMetric label="Claimable Fees" value={formatPortfolioUsd(portfolio?.claimableFeesUsd)} />
+                  <PortfolioMetric label="Active Bins" value={(positions?.length ?? 0).toLocaleString("en-US")} />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <MetricLabel>Total PnL · available history</MetricLabel>
+                    <span className="rounded-sm bg-secondary px-1.5 py-0.5 text-[10px] text-muted-foreground">RPC window</span>
+                  </div>
+                  <p className={`mt-2 font-mono text-2xl font-bold tabular-nums ${portfolio && portfolio.totalPnlUsd >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                    {formatSignedUsd(portfolio?.totalPnlUsd)}
+                  </p>
+                  <div className="mt-4 grid grid-cols-2 gap-4">
+                    <PortfolioMetric label="Win Rate" value={winRate === null ? "—" : `${winRate.toFixed(2)}%`} />
+                    <PortfolioMetric label="Biggest Realized Win" value={biggestWin > 0 ? formatPortfolioUsd(biggestWin) : "—"} />
+                  </div>
+                </div>
+              </div>
+
+              <div className="min-w-0 p-4 sm:p-5">
+                <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <CalendarDays className="h-4 w-4 text-primary" />
+                    <h2 className="font-semibold">Realized PnL Calendar</h2>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setCalendarMonth((month) => new Date(month.getFullYear(), month.getMonth() - 1, 1))}
+                      aria-label="Previous month"
+                      className="flex h-8 w-8 items-center justify-center rounded border border-border hover:bg-secondary"
+                    ><ChevronLeft className="h-4 w-4" /></button>
+                    <span className="min-w-32 text-center text-sm font-medium">{calendarMonth.toLocaleDateString("en-US", { month: "long", year: "numeric" })}</span>
+                    <button
+                      type="button"
+                      onClick={() => setCalendarMonth((month) => new Date(month.getFullYear(), month.getMonth() + 1, 1))}
+                      aria-label="Next month"
+                      className="flex h-8 w-8 items-center justify-center rounded border border-border hover:bg-secondary"
+                    ><ChevronRight className="h-4 w-4" /></button>
+                    <Button variant="secondary" size="sm" className="ml-1 h-8" onClick={() => setCalendarMonth(new Date(new Date().getFullYear(), new Date().getMonth(), 1))}>Today</Button>
+                  </div>
+                </div>
+                <div className="mb-3 flex items-center justify-between text-xs">
+                  <span className="text-muted-foreground">Daily closed-position PnL + claimed fees</span>
+                  <span className={`font-mono font-semibold ${monthlyPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>Monthly: {formatSignedUsd(monthlyPnl)}</span>
+                </div>
+                <div className="grid grid-cols-7 gap-1 text-center text-[10px] font-medium text-muted-foreground">
+                  {WEEKDAYS.map((day) => <div key={day} className="py-1">{day}</div>)}
+                </div>
+                <div className="grid grid-cols-7 gap-1" data-testid="portfolio-pnl-calendar">
+                  {calendarCells.map((date) => {
+                    const key = calendarDateKey(date);
+                    const pnl = dailyPnl.get(key);
+                    const currentMonth = date.getMonth() === calendarMonth.getMonth();
+                    return (
+                      <div
+                        key={key}
+                        className={`flex min-h-14 flex-col border-t border-border/70 px-1.5 py-1 text-left sm:min-h-15.5 ${!currentMonth ? "opacity-30" : ""} ${pnl ? pnl.pnlUsd > 0 ? "border-l-2 border-l-emerald-400 bg-emerald-400/10" : pnl.pnlUsd < 0 ? "border-l-2 border-l-rose-400 bg-rose-400/10" : "bg-secondary/30" : "bg-background/30"}`}
+                        data-testid={`portfolio-pnl-day-${key}`}
+                      >
+                        <span className="text-[10px] text-muted-foreground">{date.getDate()}</span>
+                        {currentMonth && pnl ? (
+                          <>
+                            <span className={`mt-auto truncate font-mono text-[10px] font-semibold ${pnl.pnlUsd >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                              {formatSignedUsd(pnl.pnlUsd)}
+                            </span>
+                            <span className="truncate text-[9px] text-muted-foreground">{pnl.eventCount} event{pnl.eventCount === 1 ? "" : "s"}</span>
+                          </>
+                        ) : currentMonth ? <span className="mt-auto text-[10px] text-muted-foreground">—</span> : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          </section>
+
+          {portfolioError && (
+            <p className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive" role="alert">
+              Portfolio event data could not be loaded. Current positions are still shown when available.
+            </p>
+          )}
+          {portfolio && (portfolio.historyTruncated || portfolio.basisMissingCount > 0 || portfolio.historicalPriceGapCount > 0 || portfolio.unpricedPoolCount > 0) && (
+            <p className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs leading-relaxed text-amber-200" role="status">
+              PnL can be partial{portfolio.basisMissingCount > 0 ? `; ${portfolio.basisMissingCount} position(s) have no matching deposit event in the available window` : ""}{portfolio.historicalPriceGapCount > 0 ? `; ${portfolio.historicalPriceGapCount} event cashflow(s) need historical token-X prices that are unavailable` : ""}{portfolio.unpricedPoolCount > 0 ? `; USD pricing is unavailable for ${portfolio.unpricedPoolCount} pool(s)` : ""}{portfolio.historyTruncated ? "; event pagination reached its safety limit" : ""}.
+            </p>
+          )}
+          {portfolio && (
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              {portfolio.historyWindow}. Active PnL uses current position value; realized USD PnL includes only cashflows with a known quote-token value. Historical token-X legs without a price source are excluded rather than estimated.
+            </p>
+          )}
+
+          <div className="flex items-center gap-5 border-b border-border" role="tablist" aria-label="Portfolio positions">
+            <button type="button" role="tab" aria-selected={portfolioTab === "live"} onClick={() => setPortfolioTab("live")} className={`border-b-2 px-1 py-3 text-sm font-medium ${portfolioTab === "live" ? "border-primary text-foreground" : "border-transparent text-muted-foreground"}`}>Live Positions</button>
+            <button type="button" role="tab" aria-selected={portfolioTab === "historical"} onClick={() => setPortfolioTab("historical")} className={`border-b-2 px-1 py-3 text-sm font-medium ${portfolioTab === "historical" ? "border-primary text-foreground" : "border-transparent text-muted-foreground"}`}>Historical</button>
           </div>
 
-          <p className="text-xs text-muted-foreground">
-            Click a position card to view details, bin distribution, and close the position.
-          </p>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {positions.map((pos) => {
-              const binId = pos.binId ?? pos.binRangeLow;
-              const tokenXSymbol = pos.pool?.tokenX.symbol ?? "X";
-              const tokenYSymbol = pos.pool?.tokenY.symbol ?? "Y";
-              const activeBinId = pos.pool?.activeBinId ?? binId;
-              const status = getBinStatus(binId, activeBinId);
-
-              return (
-                <Card
-                  key={pos.id}
-                  className="p-5 bg-card border-border flex flex-col gap-4 cursor-pointer hover:border-primary/50 transition-colors group"
-                  onClick={() => setSelectedPos(pos)}
-                  data-testid={`card-position-${pos.id}`}
-                >
-                  {/* Pair header */}
-                  <div className="flex items-start justify-between">
-                    <div className="flex items-center gap-2">
-                      <div className="flex -space-x-2">
-                        <img
-                          src={pos.pool?.tokenX.logoUrl}
-                          alt={tokenXSymbol}
-                          className="w-8 h-8 rounded-full border-2 border-background bg-secondary object-cover"
-                          onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-                        />
-                        <img
-                          src={pos.pool?.tokenY.logoUrl}
-                          alt={tokenYSymbol}
-                          className="w-8 h-8 rounded-full border-2 border-background bg-secondary object-cover"
-                          onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-                        />
-                      </div>
-                      <div>
-                        <h3 className="font-bold text-sm leading-tight">
-                          {tokenXSymbol}/{tokenYSymbol}
-                        </h3>
-                        <span className="text-xs px-1.5 py-0.5 rounded-sm font-semibold uppercase tracking-wider bg-primary/15 text-primary inline-flex items-center gap-1 mt-0.5">
-                          <Layers className="w-3 h-3" /> Bin {binId}
-                        </span>
-                      </div>
-                    </div>
-                    <div className="text-right flex flex-col items-end gap-1">
-                      <div className="text-lg font-mono font-bold tabular-nums">
-                        ${pos.valueUsd.toLocaleString("en", { maximumFractionDigits: 2 })}
-                      </div>
-                      <BinStatusBadge status={status} />
-                    </div>
-                  </div>
-
-                  {/* Reserves */}
-                  <div className="grid grid-cols-2 gap-2 border-t border-border pt-3">
-                    <ReserveStat symbol={tokenXSymbol} amount={pos.liquidityX} />
-                    <ReserveStat symbol={tokenYSymbol} amount={pos.liquidityY} />
-                  </div>
-
-                  {/* Click affordance */}
-                  <div className="flex items-center justify-between border-t border-border pt-2 text-xs text-muted-foreground">
-                    <span className="flex items-center gap-1">
-                      <Layers className="w-3 h-3" />
-                      {(pos.shares ?? 0).toLocaleString("en", { maximumFractionDigits: 0 })} shares
-                    </span>
-                    <span className="flex items-center gap-1 group-hover:text-primary transition-colors">
-                      View details <ChevronRight className="w-3 h-3" />
-                    </span>
-                  </div>
-                </Card>
-              );
-            })}
-          </div>
+          {portfolioTab === "live" ? (
+            <PortfolioLivePositions
+              positions={positions ?? []}
+              onSelect={setSelectedPos}
+              onExplore={() => { window.location.href = "/pools"; }}
+            />
+          ) : (
+            <PortfolioHistory positions={portfolio?.closedPositions ?? []} />
+          )}
         </>
       )}
 
@@ -280,6 +324,173 @@ export default function PositionsPage() {
           }}
         />
       )}
+    </div>
+  );
+}
+
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+function getCalendarCells(month: Date): Date[] {
+  const firstDay = new Date(month.getFullYear(), month.getMonth(), 1);
+  const offset = firstDay.getDay();
+  const dayCount = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate();
+  const cellCount = Math.ceil((offset + dayCount) / 7) * 7;
+  return Array.from({ length: cellCount }, (_, index) =>
+    new Date(month.getFullYear(), month.getMonth(), index - offset + 1),
+  );
+}
+
+function calendarDateKey(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function monthKey(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function formatPortfolioUsd(value: number | undefined): string {
+  return value === undefined || !Number.isFinite(value)
+    ? "—"
+    : `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function formatSignedUsd(value: number | undefined): string {
+  if (value === undefined || !Number.isFinite(value)) return "—";
+  const sign = value > 0 ? "+" : value < 0 ? "-" : "";
+  return `${sign}${formatPortfolioUsd(Math.abs(value))}`;
+}
+
+function MetricLabel({ children }: { children: React.ReactNode }) {
+  return <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{children}</p>;
+}
+
+function PortfolioMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0">
+      <MetricLabel>{label}</MetricLabel>
+      <p className="mt-1 truncate font-mono text-sm font-semibold tabular-nums" title={value}>{value}</p>
+    </div>
+  );
+}
+
+function PortfolioLivePositions({
+  positions,
+  onSelect,
+  onExplore,
+}: {
+  positions: Position[];
+  onSelect: (position: Position) => void;
+  onExplore: () => void;
+}) {
+  if (positions.length === 0) {
+    return (
+      <div className="border-y border-border py-12 text-center">
+        <p className="text-sm font-medium">No active positions</p>
+        <p className="mt-1 text-xs text-muted-foreground">Closed positions, when available, are listed under Historical.</p>
+        <Button className="mt-4" size="sm" onClick={onExplore} data-testid="button-explore-pools">
+          Explore pools <ChevronRight className="ml-1 h-4 w-4" />
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="overflow-x-auto rounded-md border border-border bg-card">
+      <table className="w-full min-w-190 text-sm">
+        <thead className="bg-secondary/40 text-left text-xs text-muted-foreground">
+          <tr>
+            <th className="px-4 py-3 font-medium">Pool / Bin</th>
+            <th className="px-4 py-3 text-right font-medium">Current Value</th>
+            <th className="px-4 py-3 text-right font-medium">Claimable Fees</th>
+            <th className="px-4 py-3 text-right font-medium">Token X</th>
+            <th className="px-4 py-3 text-right font-medium">Token Y</th>
+            <th className="px-4 py-3 text-right font-medium">Shares</th>
+            <th className="w-8 px-3 py-3" />
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-border">
+          {positions.map((position) => {
+            const binId = position.binId ?? position.binRangeLow;
+            const tokenX = position.pool?.tokenX.symbol ?? "X";
+            const tokenY = position.pool?.tokenY.symbol ?? "Y";
+            return (
+              <tr
+                key={position.id}
+                tabIndex={0}
+                role="button"
+                onClick={() => onSelect(position)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    onSelect(position);
+                  }
+                }}
+                className="cursor-pointer hover:bg-secondary/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
+                data-testid={`portfolio-live-${position.id}`}
+              >
+                <td className="px-4 py-3">
+                  <p className="font-semibold">{tokenX}/{tokenY}</p>
+                  <p className="mt-0.5 text-[10px] text-muted-foreground">DLMM · Bin #{binId}</p>
+                </td>
+                <td className="px-4 py-3 text-right font-mono tabular-nums">{formatPortfolioUsd(position.valueUsd)}</td>
+                <td className="px-4 py-3 text-right font-mono tabular-nums text-emerald-400">{formatPortfolioUsd(position.unrealizedFees)}</td>
+                <td className="px-4 py-3 text-right font-mono text-xs tabular-nums">{position.liquidityX.toLocaleString("en-US", { maximumFractionDigits: 4 })} {tokenX}</td>
+                <td className="px-4 py-3 text-right font-mono text-xs tabular-nums">{position.liquidityY.toLocaleString("en-US", { maximumFractionDigits: 4 })} {tokenY}</td>
+                <td className="px-4 py-3 text-right font-mono text-xs tabular-nums">{(position.shares ?? 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}</td>
+                <td className="px-3 py-3 text-muted-foreground"><ChevronRight className="h-4 w-4" /></td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function PortfolioHistory({ positions }: { positions: PortfolioClosedPosition[] }) {
+  if (positions.length === 0) {
+    return <div className="border-y border-border py-12 text-center text-sm text-muted-foreground">No closed positions in the available RPC event window.</div>;
+  }
+  return (
+    <div className="overflow-x-auto rounded-md border border-border bg-card">
+      <table className="w-full min-w-235 text-sm">
+        <thead className="bg-secondary/40 text-left text-xs text-muted-foreground">
+          <tr>
+            <th className="px-4 py-3 font-medium">Pool / Bin</th>
+            <th className="px-4 py-3 font-medium">Opened / Closed</th>
+            <th className="px-4 py-3 text-right font-medium">Deposits</th>
+            <th className="px-4 py-3 text-right font-medium">Withdrawn</th>
+            <th className="px-4 py-3 text-right font-medium">Fees Claimed</th>
+            <th className="px-4 py-3 text-right font-medium">Realized PnL</th>
+            <th className="w-10 px-3 py-3" />
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-border">
+          {positions.map((position) => (
+            <tr key={position.id} data-testid={`portfolio-history-${position.id}`}>
+              <td className="px-4 py-3">
+                <p className="font-semibold">{position.poolName}</p>
+                <p className="mt-0.5 text-[10px] text-muted-foreground">Bin #{position.binId}</p>
+              </td>
+              <td className="px-4 py-3 text-xs text-muted-foreground">
+                <p>{new Date(position.openedAt).toLocaleString()}</p>
+                <p className="mt-1">{new Date(position.closedAt).toLocaleString()}</p>
+              </td>
+              <td className="px-4 py-3 text-right font-mono tabular-nums">{formatPortfolioUsd(position.depositsUsd)}</td>
+              <td className="px-4 py-3 text-right font-mono tabular-nums">{formatPortfolioUsd(position.withdrawnUsd)}</td>
+              <td className="px-4 py-3 text-right font-mono tabular-nums">{formatPortfolioUsd(position.feesClaimedUsd)}</td>
+              <td className={`px-4 py-3 text-right font-mono font-semibold tabular-nums ${position.pnlUsd >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                {formatSignedUsd(position.pnlUsd)}
+              </td>
+              <td className="px-3 py-3 text-right">
+                <a href={`https://stellar.expert/explorer/testnet/tx/${position.txHash}`} target="_blank" rel="noreferrer" aria-label={`View close transaction ${position.txHash}`} className="inline-flex text-muted-foreground hover:text-primary">
+                  <ExternalLink className="h-4 w-4" />
+                </a>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

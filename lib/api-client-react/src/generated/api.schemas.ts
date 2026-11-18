@@ -273,6 +273,51 @@ export interface PositionEvent {
   shares: string;
 }
 
+export interface PortfolioDailyPnl {
+  date: string;
+  pnlUsd: number;
+  eventCount: number;
+}
+
+export interface PortfolioClosedPosition {
+  id: string;
+  poolId: string;
+  poolName: string;
+  binId: number;
+  openedAt: string;
+  closedAt: string;
+  depositsUsd: number;
+  withdrawnUsd: number;
+  feesClaimedUsd: number;
+  pnlUsd: number;
+  txHash: string;
+}
+
+export interface PortfolioSummary {
+  address: string;
+  asOf: string;
+  /** Available Soroban RPC event range; not an all-time archive */
+  historyWindow: string;
+  historyTruncated: boolean;
+  /** Active or closed positions without a matching deposit event in the available RPC window */
+  basisMissingCount: number;
+  /** Event cashflows containing token X that cannot be valued in USD without historical token prices */
+  historicalPriceGapCount: number;
+  /** Pools excluded from USD PnL because no usable token price is available */
+  unpricedPoolCount: number;
+  /** Current value of active positions using available token price references */
+  totalValueUsd: number;
+  /** Deposits observed in the available event window, valued in quote-token terms */
+  depositsUsd: number;
+  feesClaimedUsd: number;
+  claimableFeesUsd: number;
+  realizedPnlUsd: number;
+  unrealizedPnlUsd: number;
+  totalPnlUsd: number;
+  dailyPnl: PortfolioDailyPnl[];
+  closedPositions: PortfolioClosedPosition[];
+}
+
 export type TransactionType = typeof TransactionType[keyof typeof TransactionType];
 
 

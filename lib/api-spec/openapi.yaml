@@ -347,6 +347,25 @@ paths:
                 items:
                   $ref: "#/components/schemas/Position"
 
+  /portfolio/{address}:
+    get:
+      operationId: getPortfolioSummary
+      tags: [pools]
+      summary: Get current LP portfolio value and PnL from available on-chain events
+      parameters:
+        - name: address
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Portfolio summary and event-window history
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PortfolioSummary"
+
 components:
   schemas:
     HealthStatus:
@@ -769,6 +788,95 @@ components:
         shares:
           type: string
           description: "Raw LP shares (i128), as a string to avoid precision loss"
+
+    PortfolioSummary:
+      type: object
+      required: [address, asOf, historyWindow, historyTruncated, basisMissingCount, historicalPriceGapCount, unpricedPoolCount, totalValueUsd, depositsUsd, feesClaimedUsd, claimableFeesUsd, realizedPnlUsd, unrealizedPnlUsd, totalPnlUsd, dailyPnl, closedPositions]
+      properties:
+        address:
+          type: string
+        asOf:
+          type: string
+          format: date-time
+        historyWindow:
+          type: string
+          description: Available Soroban RPC event range; not an all-time archive
+        historyTruncated:
+          type: boolean
+        basisMissingCount:
+          type: integer
+          description: Active or closed positions without a matching deposit event in the available RPC window
+        historicalPriceGapCount:
+          type: integer
+          description: Event cashflows containing token X that cannot be valued in USD without historical token prices
+        unpricedPoolCount:
+          type: integer
+          description: Pools excluded from USD PnL because no usable token price is available
+        totalValueUsd:
+          type: number
+          description: Current value of active positions using available token price references
+        depositsUsd:
+          type: number
+          description: Deposits observed in the available event window, valued in quote-token terms
+        feesClaimedUsd:
+          type: number
+        claimableFeesUsd:
+          type: number
+        realizedPnlUsd:
+          type: number
+        unrealizedPnlUsd:
+          type: number
+        totalPnlUsd:
+          type: number
+        dailyPnl:
+          type: array
+          items:
+            $ref: "#/components/schemas/PortfolioDailyPnl"
+        closedPositions:
+          type: array
+          items:
+            $ref: "#/components/schemas/PortfolioClosedPosition"
+
+    PortfolioDailyPnl:
+      type: object
+      required: [date, pnlUsd, eventCount]
+      properties:
+        date:
+          type: string
+          format: date
+        pnlUsd:
+          type: number
+        eventCount:
+          type: integer
+
+    PortfolioClosedPosition:
+      type: object
+      required: [id, poolId, poolName, binId, openedAt, closedAt, depositsUsd, withdrawnUsd, feesClaimedUsd, pnlUsd, txHash]
+      properties:
+        id:
+          type: string
+        poolId:
+          type: string
+        poolName:
+          type: string
+        binId:
+          type: integer
+        openedAt:
+          type: string
+          format: date-time
+        closedAt:
+          type: string
+          format: date-time
+        depositsUsd:
+          type: number
+        withdrawnUsd:
+          type: number
+        feesClaimedUsd:
+          type: number
+        pnlUsd:
+          type: number
+        txHash:
+          type: string
 
     Transaction:
       type: object

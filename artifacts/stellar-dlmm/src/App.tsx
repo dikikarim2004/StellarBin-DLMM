@@ -10,7 +10,7 @@ import SwapPage from "@/pages/swap";
 import DiscoverPage from "@/pages/discover";
 import PoolDetailPage from "@/pages/pool-detail";
 import CreatePoolPage from "@/pages/create-pool";
-import PositionsPage from "@/pages/positions";
+import PortfolioPage from "@/pages/positions";
 import AnalyticsPage from "@/pages/analytics";
 import { WalletProvider } from "@/contexts/wallet";
 import { WalletModal, HeaderWalletButton } from "@/components/wallet-modal";
@@ -23,7 +23,7 @@ const NAV_ITEMS = [
   { href: "/swap", label: "Swap", icon: ArrowLeftRight },
   { href: "/pools", label: "Discover", icon: LayoutDashboard },
   { href: "/create", label: "Create", icon: PlusCircle },
-  { href: "/positions", label: "Positions", icon: Activity },
+  { href: "/portfolio", label: "Portfolio", icon: Activity },
   { href: "/analytics", label: "Analytics", icon: BarChart3 },
 ];
 
@@ -148,7 +148,7 @@ function MobileTabs() {
           <Link
             key={item.href}
             href={item.href}
-            className={`flex-1 flex flex-col items-center justify-center gap-1 py-2 text-xs font-medium min-w-[72px] border-b-2 transition-colors ${
+            className={`flex-1 flex flex-col items-center justify-center gap-1 py-2 text-xs font-medium min-w-18 border-b-2 transition-colors ${
               isActive
                 ? "text-primary border-primary"
                 : "text-muted-foreground border-transparent"
@@ -200,7 +200,7 @@ function ConfigWarning() {
 
 function Layout({ children }: { children: React.ReactNode }) {
   return (
-    <div className="min-h-[100dvh] bg-background text-foreground">
+    <div className="min-h-dvh bg-background text-foreground">
       <Header />
       <ConfigWarning />
       <main>
@@ -225,7 +225,8 @@ function Router() {
         <Route path="/pools" component={DiscoverPage} />
         <Route path="/pools/:poolId" component={PoolDetailPage} />
         <Route path="/create" component={CreatePoolPage} />
-        <Route path="/positions" component={PositionsPage} />
+        <Route path="/portfolio" component={PortfolioPage} />
+        <Route path="/positions" component={PortfolioPage} />
         <Route path="/analytics" component={AnalyticsPage} />
         <Route component={NotFound} />
       </Switch>
